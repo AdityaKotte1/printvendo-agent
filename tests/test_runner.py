@@ -13,6 +13,7 @@ from pathlib import Path
 
 from agent.printing import Task
 from agent.runner import run_once
+from agent.waiting import JobState
 
 
 class FakeBackend:
@@ -54,7 +55,10 @@ def a_task(task_id: str = "tsk_1", **kwargs) -> dict:
 
 
 def printer_that_works(printed: list[Task]):
-    def _print(task: Task, *, file_path: Path, printer: str, **_) -> None:
+    def _print(task: Task, *, file_path: Path, printer: str, on_state=None, **_) -> None:
+        # A printer with nothing queued ahead of it.
+        if on_state:
+            on_state(JobState.PRINTING)
         printed.append(task)
 
     return _print
@@ -203,3 +207,45 @@ def test_a_runaway_queue_stops_at_the_limit(tmp_path):
     )
 
     assert len(printed) == 10
+
+
+# ── what the student sees, and when ─────────────────────────────────────────
+
+
+def test_printing_is_reported_when_the_printer_starts_not_when_we_send(tmp_path):
+    """The state the whole chain exists for.
+
+    A job sitting behind somebody else's two hundred pages is **queued**. The
+    agent used to say "printing" the moment it handed the file over, which sent
+    students walking to the shop to collect nothing.
+    """
+    from agent.waiting import JobState
+
+    def printer_with_a_queue(task, *, file_path, printer, on_state=None, **_):
+        # As a real queue would: waiting, then on the printer, then gone.
+        on_state(JobState.QUEUED)
+        on_state(JobState.PRINTING)
+        on_state(JobState.GONE)
+
+    backend = FakeBackend([a_task("tsk_1")])
+
+    run_once(backend, printer="HP-01", workspace=tmp_path, printer_fn=printer_with_a_queue)
+
+    assert [state for _, state, _ in backend.reports] == ["printing", "printed"]
+
+
+def test_a_job_that_waits_its_turn_says_nothing_until_it_starts(tmp_path):
+    """Queued is where the task already is as far as the server is concerned --
+    it was claimed, and nothing has happened since. Reporting it again would be
+    noise on every job at a busy shop."""
+    from agent.waiting import JobState
+
+    def printer_that_waits(task, *, file_path, printer, on_state=None, **_):
+        on_state(JobState.QUEUED)
+        raise RuntimeError("printer switched off")
+
+    backend = FakeBackend([a_task("tsk_1")])
+
+    run_once(backend, printer="HP-01", workspace=tmp_path, printer_fn=printer_that_waits)
+
+    assert [state for _, state, _ in backend.reports] == ["failed"]

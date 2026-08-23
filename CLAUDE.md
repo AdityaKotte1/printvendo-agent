@@ -127,18 +127,50 @@ recomputed here. One calculation decides the price, the tray count and what the
 printer is asked for; a second opinion in the agent is how a counter drifts
 from the physical tray.
 
+## Queued, printing, printed
+
+The three words a student reads are produced here, so each has to mean what it
+says. **Printing means the printer has the job**, not that the agent sent it: a
+job behind somebody else's two hundred pages is queued, and telling a student
+otherwise sends them walking to the counter for nothing.
+
+`lp` returns when a job is queued and Ghostscript returns when the spooler has
+the data — neither is a state worth reporting. So the queue is polled for one:
+
+| | Pi (CUPS) | Windows (spooler) |
+|---|---|---|
+| Queued | in `lpstat -o`, not at the head | job present, `SPOOLING` or paused |
+| Printing | at the head of `lpstat -o` | `JOB_STATUS_PRINTING` |
+| Printed | gone from `lpstat -o` | job id gone from `EnumJobs` |
+| Failed | printer `disabled`/`stopped` | `ERROR`, `PAPEROUT`, `OFFLINE`, `BLOCKED` |
+
+A change is reported once, when it happens — a long job must not post
+"printing" every two seconds for four minutes. A paused Windows job is *queued*,
+not failed: it resumes, and the long timeout catches it if it does not.
+
+**A queue that cannot be read is not an empty queue**, and **not finishing is a
+failure, never a success**. A wait that timed out and said "done" would be the
+silent version of the bug this replaced.
+
+The Windows watcher matches **job ids snapshotted before printing**. Matching by
+document name was tried first and was a no-op that looked exactly like a working
+one: the spooler calls every Ghostscript job "Ghostscript output", whatever the
+file. Found by watching a real queue, not by reading the docs.
+
 ## Not done yet
 
 - **The wake socket is not connected.** The loop polls every fifteen seconds,
   which is what every kiosk did before the socket existed and is correct but
   slower. `/v1/device/ws` is built and waiting.
-- **Nothing waits for the spooler.** A task is reported PRINTED when the print
-  command returns, which on Windows means "Ghostscript finished handing it
-  over". Polling `EnumJobs` would let it report what the printer actually did,
-  and report a jam as a failure rather than a success.
-- **`sheets_printed` is the prediction, not the count.** CUPS can report
-  `job-media-sheets-completed`; Windows can be asked too. Until then the
-  server's figure is used, which is exactly what it is designed to fall back
-  to.
-- **No test against real hardware.** Every option is asserted in the built
-  command; whether a given driver honours it is a question for a printer.
+- **`sheets_printed` is the server's figure, not the printer's count.** By
+  decision: one calculation decides the price, the tray count and what the
+  printer is asked for, and a second opinion in the agent is how a counter
+  drifts from the physical tray. CUPS can report
+  `job-media-sheets-completed` if that is ever wanted.
+- **A printer that swallows a job and jams silently still reports printed.**
+  The queue letting go is the best signal the spooler gives; distinguishing
+  "came out correctly" needs the driver's own page accounting.
+- **Tested against a Windows spooler, not against a Pi.** The CUPS half is
+  covered by tests over real `lpstat` output and is the same shape the previous
+  agent used in production, but it has not been run on hardware in this
+  session.

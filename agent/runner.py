@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agent.printing import Task, print_task
+from agent.waiting import JobState
 
 log = logging.getLogger("agent")
 
@@ -88,15 +89,29 @@ def _do_one(
             _report(backend, task.task_id, "failed")
             return
 
-        # Said before the paper moves, so a shop watching the queue sees it
-        # start and a task that never finishes is visibly stuck.
-        _report(backend, task.task_id, "printing")
+        def announce(state: JobState) -> None:
+            """Say "printing" when the **printer** starts, not when we send.
+
+            A job behind somebody else's two hundred pages is queued, and the
+            server already knows that -- the task was claimed and nothing has
+            happened since. Saying it again on every job would be noise at a
+            busy shop; saying "printing" early sends students walking to the
+            counter to collect nothing.
+            """
+            if state is JobState.PRINTING:
+                _report(backend, task.task_id, "printing")
 
         try:
             # `on_tick` is the heartbeat, called while the printer works. A
             # two-hundred-page job takes minutes, and a machine that goes quiet
             # for minutes is one an operator is told has gone offline.
-            printer_fn(task, file_path=path, printer=printer, on_tick=on_tick)
+            printer_fn(
+                task,
+                file_path=path,
+                printer=printer,
+                on_tick=on_tick,
+                on_state=announce,
+            )
         except Exception as exc:  # noqa: BLE001
             log.error("printing %s failed: %s", task.task_id, exc)
             _report(backend, task.task_id, "failed")

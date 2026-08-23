@@ -28,12 +28,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent.waiting import (
-    StillQueued,
+    JobState,
     cups_job_id,
-    cups_still_queued,
-    wait_for_job,
+    cups_watcher,
+    watch_job,
     windows_job_ids,
-    windows_still_queued,
+    windows_watcher,
 )
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -245,19 +245,25 @@ def print_task(
     ghostscript: str | None = None,
     timeout: int = 600,
     on_tick: Callable[[], None] | None = None,
+    on_state: Callable[[JobState], None] | None = None,
 ) -> None:
     """Send it to the printer and wait for the queue to let go of it.
 
     **Returning is what makes the student's screen say "printed"**, so it must
     not happen a moment early. `lp` returns when the job is queued and
-    Ghostscript returns when the spooler has the data; neither means paper.
-    So the command is only the first half, and the second half watches the
-    queue.
+    Ghostscript returns when the spooler has the data; neither means paper. So
+    the command is only the first half, and the second half follows the job
+    through the queue.
 
-    A non-zero exit, or a job that never leaves the queue, raises: the caller
-    reports the task FAILED, which is what puts a refund within reach.
-    Swallowing either would leave a student holding nothing and a screen saying
-    it printed.
+    `on_state` is called as the job moves -- queued, then printing -- so the
+    student sees where it actually is rather than a guess made when it was
+    sent. A job behind somebody else's two hundred pages is queued, and saying
+    "printing" would send them walking to the shop.
+
+    A non-zero exit, a printer that has stopped, or a job that never leaves the
+    queue all raise: the caller reports the task FAILED, which is what puts a
+    refund within reach. Swallowing any of them would leave a student holding
+    nothing and a screen saying it printed.
     """
     cmd = build_command(
         task, file_path=str(file_path), printer=printer, ghostscript=ghostscript
@@ -276,13 +282,21 @@ def print_task(
         )
 
     if IS_WINDOWS:
-        watch = windows_still_queued(printer, before)
+        # Whatever appeared after we printed is ours.
+        watch = windows_watcher(printer, windows_job_ids(printer) - before)
     else:
-        # `lp` names the job it made. Without that there is nothing to wait
-        # for, and `cups_job_id` raises rather than letting the agent guess.
-        watch = cups_still_queued(cups_job_id(result.stdout))
+        # `lp` names the job it made. Without that there is nothing to follow,
+        # and `cups_job_id` raises rather than letting the agent guess.
+        watch = cups_watcher(cups_job_id(result.stdout), printer)
 
-    if wait_for_job(watch, on_tick=on_tick) is StillQueued:
+    outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
+
+    if outcome is JobState.ERROR:
+        raise RuntimeError(
+            "the printer stopped on this job -- it may be out of paper, "
+            "jammed, or switched off"
+        )
+    if outcome is not JobState.GONE:
         raise RuntimeError(
             "the printer still has this job after a long wait -- it may be out "
             "of paper, jammed, or switched off"
