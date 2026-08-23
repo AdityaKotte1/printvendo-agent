@@ -11,17 +11,19 @@ set -euo pipefail
 
 API="https://api.printvendo.com"
 CODE=""
+PRINTER=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --code) CODE="$2"; shift 2 ;;
     --api) API="$2"; shift 2 ;;
+    --printer) PRINTER="$2"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$CODE" ]]; then
-  echo "Usage: sudo bash install-pi.sh --code dve_..." >&2
+  echo "Usage: sudo bash install-pi.sh --code dve_... [--printer NAME] [--api URL]" >&2
   echo "Get the code from the Printvendo admin console, for this shop." >&2
   exit 1
 fi
@@ -40,10 +42,31 @@ echo "==> Checking the printer"
 # model, and guessing here is how a dissertation prints on a label machine.
 if ! lpstat -e | grep -q .; then
   echo "No printer is set up in CUPS yet." >&2
-  echo "Add it first (usually: plug it in and run \`lpadmin\`, or open http://localhost:631)." >&2
+  echo >&2
+  echo "On a headless Pi, with the printer plugged in and switched on:" >&2
+  echo "    lpinfo -v                      # find its usb:// address" >&2
+  echo "    lpadmin -p Shop -E -v 'usb://...' -m everywhere" >&2
+  echo "    lpstat -e                      # it should now be listed" >&2
+  echo >&2
+  echo "\`-m everywhere\` is driverless IPP and is right for almost any printer" >&2
+  echo "made since about 2015. For an older one, \`lpinfo -m | grep -i <model>\`" >&2
+  echo "lists the drivers this Pi has." >&2
   exit 1
 fi
 lpstat -e | sed 's/^/    /'
+
+FOUND=$(lpstat -e | wc -l)
+if [[ -n "$PRINTER" ]]; then
+  if ! lpstat -e | grep -qx "$PRINTER"; then
+    echo "There is no printer called '$PRINTER' on this Pi. Use one of the names above." >&2
+    exit 1
+  fi
+elif [[ "$FOUND" -gt 1 ]]; then
+  # Guessing between two printers means somebody's dissertation on the label
+  # machine.
+  echo "This Pi has $FOUND printers. Run again with --printer NAME." >&2
+  exit 1
+fi
 
 echo "==> Installing the agent"
 install -d /opt/printvendo
@@ -52,7 +75,9 @@ python3 -m venv /opt/printvendo/venv
 /opt/printvendo/venv/bin/pip install --quiet "$(dirname "$0")"
 
 echo "==> Enrolling this machine"
-/opt/printvendo/venv/bin/printvendo-agent enrol --code "$CODE" --api "$API"
+ENROL=(enrol --code "$CODE" --api "$API")
+[[ -n "$PRINTER" ]] && ENROL+=(--printer "$PRINTER")
+/opt/printvendo/venv/bin/printvendo-agent "${ENROL[@]}"
 
 echo "==> Installing the service"
 cat > /etc/systemd/system/printvendo-agent.service <<'UNIT'
@@ -76,6 +101,14 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now printvendo-agent
+
+echo "==> Checking it end to end"
+# The installer says whether the shop can print, rather than leaving somebody
+# to find out from the first student.
+if ! /opt/printvendo/venv/bin/printvendo-agent check; then
+  echo "The kiosk is not ready. Fix the above, then run that command again." >&2
+  exit 1
+fi
 
 echo
 echo "Done. The kiosk is printing."
