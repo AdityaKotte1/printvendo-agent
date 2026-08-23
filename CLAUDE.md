@@ -63,6 +63,10 @@ checked against the machine rather than assumed.
 
 ## Setting one up
 
+`SETUP.md` is the whole procedure for a person doing it: what to install first,
+how to add a printer to CUPS over SSH, the bench setup against a laptop, and
+what each failure means. What follows is the shape of it.
+
 Pi, headless, over SSH:
 
 ```bash
