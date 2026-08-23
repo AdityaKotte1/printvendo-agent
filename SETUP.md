@@ -157,6 +157,40 @@ hours**. Two kiosks means running this command twice — never reuse a code.
 
 `--paper 500` says the tray holds 500 sheets. `--name` is what students see.
 
+### B6. Put the shop on the map
+
+Without coordinates the shop still works, but the student app cannot sort it by
+distance, cannot draw it on the map, and cannot tell whether it is nearby. The
+"Nearby" tab shows unplaced shops rather than hiding them, so a missing position
+looks like everything is fine.
+
+**Getting the numbers.** Open Google Maps, find the exact spot — the shop
+counter, not the building — right-click it, and the first item in the menu is a
+pair of numbers like `12.9716, 77.5946`. Click to copy. The first is latitude,
+the second is longitude.
+
+Set it when you create the kiosk:
+
+```powershell
+.venv\Scripts\python -m app.cli provision-kiosk --name "Test Shop" --paper 500 --latitude 12.9716 --longitude 77.5946 --location "Ground floor, near the lift"
+```
+
+Or afterwards, for a kiosk that already exists:
+
+```powershell
+.venv\Scripts\python -m app.cli place-kiosk --kiosk ksk_XXXXXXXX --latitude 12.9716 --longitude 77.5946 --location "Ground floor, near the lift"
+```
+
+The `ksk_...` id is printed by `provision-kiosk`. Both are refused if you give a
+latitude without a longitude, or a number that is not on Earth — a half-placed
+shop drops out of every distance ranking without saying why.
+
+`--location` is the sentence a student reads under the shop's name. It is not
+the address; it is what they should look for once they are in the right
+building.
+
+An admin can also do this over the API: `PUT /v1/admin/kiosks/{id}/location`.
+
 ---
 
 # Part C — Turn a Windows PC into the kiosk
@@ -433,6 +467,7 @@ Other symptoms:
 | Job stays **Queued** for ever | agent not running. `Get-ScheduledTask PrintvendoAgent`, or `systemctl status printvendo-agent` |
 | Kiosk shows **offline** in the app | same — the agent sends a heartbeat every minute |
 | Job goes to **Failed** at once | the printer is out of paper, offline, or jammed. The agent reads that from the queue and does not pretend |
+| Shop is not in the **Nearby** tab, or is not sorted by distance | it has no coordinates, or the phone refused location. B6, and check the browser allowed location |
 | Prints, but ignores colour or duplex | the printer driver, not the agent. Print the same PDF by hand with the same settings — if that ignores them too, it is the driver |
 | Everything worked yesterday, nothing today | your laptop's `<LAN-IP>` changed. Re-check `ipconfig`, and update `--api` |
 
