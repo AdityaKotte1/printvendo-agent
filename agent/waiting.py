@@ -51,12 +51,34 @@ JOB_STATUS_SPOOLING = 0x00000008
 JOB_STATUS_PRINTING = 0x00000010
 JOB_STATUS_OFFLINE = 0x00000020
 JOB_STATUS_PAPEROUT = 0x00000040
+JOB_STATUS_PRINTED = 0x00000080
+JOB_STATUS_DELETED = 0x00000100
 JOB_STATUS_BLOCKED = 0x00000200
+JOB_STATUS_USER_INTERVENTION = 0x00000800
+JOB_STATUS_COMPLETE = 0x00001000
+JOB_STATUS_RETAINED = 0x00002000
 
 # Everything that means "this will not print until somebody does something
 # physical". Paused is deliberately not here: it resumes.
 WINDOWS_TROUBLE = (
-    JOB_STATUS_ERROR | JOB_STATUS_OFFLINE | JOB_STATUS_PAPEROUT | JOB_STATUS_BLOCKED
+    JOB_STATUS_ERROR
+    | JOB_STATUS_OFFLINE
+    | JOB_STATUS_PAPEROUT
+    | JOB_STATUS_BLOCKED
+    # "Load paper in tray 2" is a prompt on the machine, and nobody standing at
+    # a kiosk is going to answer it. A queue that needs a person is a failure.
+    | JOB_STATUS_USER_INTERVENTION
+)
+
+# The spooler has finished with this job, whatever it is still displaying.
+#
+# A Windows printer can be set to "Keep printed documents", and every job also
+# sits at PRINTED for a moment before the spooler drops it -- so `EnumJobs` goes
+# on returning a job whose paper is already in somebody's hand. Reading that as
+# QUEUED is what made every successful print run the full fifteen-minute wait
+# and then report the printer stuck, which put the shop into maintenance.
+WINDOWS_DONE = (
+    JOB_STATUS_PRINTED | JOB_STATUS_DELETED | JOB_STATUS_COMPLETE | JOB_STATUS_RETAINED
 )
 
 
@@ -122,9 +144,17 @@ def windows_state_from_jobs(jobs: list[dict], *, ours: set[int]) -> JobState:
 
     statuses = [int(job.get("Status") or 0) for job in mine]
 
-    if any(status & WINDOWS_TROUBLE for status in statuses):
+    # A job the spooler has finished with is not our job any more, however long
+    # the queue goes on displaying it. Dropped before anything else is read off
+    # it, because the spooler sets PRINTED alongside PRINTING as it finishes and
+    # a finished job must not be reported as still printing.
+    unfinished = [status for status in statuses if not status & WINDOWS_DONE]
+    if not unfinished:
+        return JobState.GONE
+
+    if any(status & WINDOWS_TROUBLE for status in unfinished):
         return JobState.ERROR
-    if any(status & JOB_STATUS_PRINTING for status in statuses):
+    if any(status & JOB_STATUS_PRINTING for status in unfinished):
         return JobState.PRINTING
     return JobState.QUEUED
 

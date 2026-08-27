@@ -1,6 +1,6 @@
 """Talking to the backend.
 
-Five calls, and one credential. `X-Device-Token` **is** the kiosk: nothing the
+Eight calls, and one credential. `X-Device-Token` **is** the kiosk: nothing the
 agent sends says which kiosk it belongs to, because the token decides. The old
 `/pi/*` routes checked that a token was valid and then trusted the printer id in
 the URL, so one shop's machine could fetch another shop's file.
@@ -87,6 +87,47 @@ class Backend:
             f"{self.base_url}/v1/device/tasks/{task_id}/status",
             headers=self._headers,
             json=payload,
+        )
+        response.raise_for_status()
+
+
+    def next_commands(self) -> list[dict]:
+        """Everything an operator has asked this machine to do.
+
+        A list, unlike a print task: restarting the agent kills the loop that
+        would have come back for whatever was queued behind it, so taking one
+        per pass would silently drop the second half of "restart cups and then
+        restart the agent".
+        """
+        response = self._client.post(
+            f"{self.base_url}/v1/device/commands/next", headers=self._headers, json={}
+        )
+        response.raise_for_status()
+        return response.json() or []
+
+    def report_command(
+        self, command_id: str, *, succeeded: bool, error_message: str | None = None
+    ) -> None:
+        """How a command went. The message is shown to an operator verbatim."""
+        response = self._client.post(
+            f"{self.base_url}/v1/device/commands/{command_id}/result",
+            headers=self._headers,
+            json={"succeeded": succeeded, "error_message": error_message},
+        )
+        response.raise_for_status()
+
+    def report_printer_health(self, *, stuck: bool, detail: str | None = None) -> None:
+        """Whether this machine can currently get a job out of the printer.
+
+        Stuck closes the shop to students — the kiosk stops selling, so nobody
+        pays for a print that was never going to come out — while every
+        operator surface still shows it and says why. Saying it is working
+        again reopens it, but only a shop this mechanism closed.
+        """
+        response = self._client.post(
+            f"{self.base_url}/v1/device/printer-health",
+            headers=self._headers,
+            json={"stuck": stuck, "detail": detail},
         )
         response.raise_for_status()
 

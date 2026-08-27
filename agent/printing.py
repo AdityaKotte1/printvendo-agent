@@ -237,6 +237,22 @@ def build_command(
     return build_cups_command(task, file_path=file_path, printer=printer)
 
 
+class PrinterStuck(RuntimeError):
+    """The printer took the job and did not finish it.
+
+    Distinct from an ordinary failure because the *shop* is what is broken, not
+    the file. A PDF Ghostscript refuses fails one student and the next job
+    prints fine; a jammed tray fails everybody until somebody walks over to it,
+    and the kiosk should stop selling rather than take money for prints nobody
+    will collect.
+
+    A subclass of RuntimeError so every existing handler still catches it: the
+    task is still reported FAILED, which is still what puts a refund within
+    reach. What is added is the second sentence to the server, not a different
+    outcome for the student.
+    """
+
+
 def print_task(
     task: Task,
     *,
@@ -292,12 +308,12 @@ def print_task(
     outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
 
     if outcome is JobState.ERROR:
-        raise RuntimeError(
+        raise PrinterStuck(
             "the printer stopped on this job -- it may be out of paper, "
             "jammed, or switched off"
         )
     if outcome is not JobState.GONE:
-        raise RuntimeError(
+        raise PrinterStuck(
             "the printer still has this job after a long wait -- it may be out "
             "of paper, jammed, or switched off"
         )

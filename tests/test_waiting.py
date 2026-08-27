@@ -222,3 +222,56 @@ def test_it_keeps_the_kiosk_alive_while_it_waits():
     )
 
     assert beats
+
+
+# ── a job the spooler keeps after printing ──────────────────────────────────
+#
+# Windows printers have a "Keep printed documents" setting, and a job also sits
+# briefly at PRINTED before the spooler drops it. `EnumJobs` keeps returning it,
+# with 0x80 set and no PRINTING bit -- which the reader treated as QUEUED, so
+# the job never reached GONE. The wait then ran its full fifteen minutes and
+# `print_task` raised PrinterStuck: the student's paper was in their hand, the
+# task was reported FAILED, and **the shop was put into maintenance**. Every
+# successful print closed the kiosk. Found by watching a real Windows queue.
+
+PRINTED = 0x00000080
+RETAINED = 0x00002000
+COMPLETE = 0x00001000
+DELETED = 0x00000100
+USER_INTERVENTION = 0x00000800
+
+
+@pytest.mark.parametrize("status", [PRINTED, RETAINED, COMPLETE, DELETED])
+def test_a_windows_job_the_spooler_has_finished_is_done(status):
+    """It came out. That the spooler is still listing it is a display setting,
+    not a fact about the paper."""
+    state = windows_state_from_jobs([windows_job(7, status)], ours={7})
+
+    assert state is JobState.GONE
+
+
+def test_a_printed_job_is_done_even_while_the_printing_bit_lingers():
+    """The spooler sets PRINTED alongside PRINTING for a moment as it finishes.
+    Done wins: the alternative is calling a finished job "printing" for ever."""
+    state = windows_state_from_jobs([windows_job(7, PRINTED | PRINTING)], ours={7})
+
+    assert state is JobState.GONE
+
+
+def test_a_job_waiting_on_a_person_is_an_error():
+    """"Load paper in tray 2" is a prompt on the machine, and nobody at a kiosk
+    is going to answer it. It is a failure, not a queue."""
+    state = windows_state_from_jobs([windows_job(7, USER_INTERVENTION)], ours={7})
+
+    assert state is JobState.ERROR
+
+
+def test_one_finished_job_does_not_make_a_second_one_finished():
+    """Two of ours in the queue: one printed, one still going. The pass is not
+    over until both are, or a job behind a finished one is reported printed
+    while it is still spooling."""
+    state = windows_state_from_jobs(
+        [windows_job(7, PRINTED), windows_job(8, PRINTING)], ours={7, 8}
+    )
+
+    assert state is JobState.PRINTING

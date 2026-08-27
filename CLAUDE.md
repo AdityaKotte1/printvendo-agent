@@ -114,6 +114,9 @@ POST /v1/device/heartbeat           alive; "online" is derived from this
 POST /v1/device/tasks/next          claim one task, or nothing
 GET  /v1/device/tasks/{id}/file     the PDF, streamed to disk
 POST /v1/device/tasks/{id}/status   printing / printed / failed / blocked
+POST /v1/device/commands/next       everything an operator has asked for
+POST /v1/device/commands/{id}/result   how it went
+POST /v1/device/printer-health      stuck / working again -- closes the shop
 WS   /v1/device/ws                  {"type": "wake"} means ask now
 ```
 
@@ -121,7 +124,12 @@ WS   /v1/device/ws                  {"type": "wake"} means ask now
 belongs to; the old `/pi/*` routes trusted a printer id in the URL, so one
 shop's machine could fetch another's file.
 
-Claiming returns **one** task because the server claims with a single
+Claiming **commands** returns a list, not one. Restarting the agent kills the
+loop that would have come back for whatever was queued behind it, so a machine
+handed one per pass would silently drop the second half of "restart the print
+service, then restart the agent".
+
+Claiming a **task** returns one because the server claims with a single
 `FOR UPDATE SKIP LOCKED` statement — two devices racing cannot be handed the
 same job. The agent's half of that bargain is to keep asking until the answer
 is nothing.
@@ -174,7 +182,53 @@ file. Found by watching a real queue, not by reading the docs.
 - **A printer that swallows a job and jams silently still reports printed.**
   The queue letting go is the best signal the spooler gives; distinguishing
   "came out correctly" needs the driver's own page accounting.
+- **The restart commands have not been run on a Pi.** `restart_printing` was
+  invoked for real on Windows and failed with the Spooler's own words because
+  the shell was not elevated -- the correct behaviour, and the reason the
+  message is passed through rather than a return code. Under the installer the
+  agent runs as SYSTEM with `RunLevel Highest`, which has the rights. The CUPS
+  and systemd halves are covered by tests and have not met hardware.
 - **Tested against a Windows spooler, not against a Pi.** The CUPS half is
   covered by tests over real `lpstat` output and is the same shape the previous
   agent used in production, but it has not been run on hardware in this
   session.
+
+## Commands, and admitting the printer is stuck
+
+`agent/commands.py` does what the console asked. Two commands and no more:
+
+- `restart_printing` — CUPS on a Pi, the Print Spooler on Windows. The server
+  sends one name and the machine knows which it has.
+- `restart_agent` — through the service manager (`systemctl restart
+  printvendo-agent`, or stop/start the `PrintvendoAgent` scheduled task), never
+  by exiting. A bare `sys.exit` on a machine whose supervisor was not told to
+  restart it leaves a shop with no agent and no way back but driving to it.
+
+**`restart_agent` is reported before it runs.** The process that would report it
+afterwards is the one being killed, so a command that waited would always end in
+silence and read as a failure. The call is detached for the same reason.
+
+**Which is why it checks first.** `restart_agent.precheck` asks whether anything
+supervises this process -- `systemctl is-enabled printvendo-agent`, or
+`Get-ScheduledTask` -- and refuses if not. An agent started by hand from a
+terminal would otherwise detach a restart that does nothing while the console
+reported it succeeded. The check is a `precheck` on the handler rather than the
+first line of the function, because by the time the function runs the caller has
+already sent the report.
+
+Nothing restarts Ghostscript. It is not a service: a copy runs for one file and
+exits.
+
+**Commands are claimed before work.** A restart asked for because nothing is
+printing must not queue behind the twenty jobs that exist because nothing is
+printing. `_do_commands` never raises — work is the job, commands are the
+favour.
+
+**A stuck printer closes the shop; a bad file does not.** `print_task` raises
+`PrinterStuck` when the queue will not let go of a job or the printer has
+stopped, and only that raises `report_printer_health(stuck=True)`. Ghostscript
+refusing a PDF fails one student and the next job prints fine; a jammed tray
+fails everybody. `PrinterHealth` reports only on the *change*, so a jam is one
+alert rather than one per failed job, and a failed report puts the flag back so
+the next job tries again — a shop left selling because one request failed is the
+whole thing this prevents.
