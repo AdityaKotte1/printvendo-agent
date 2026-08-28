@@ -28,6 +28,8 @@ import logging
 import platform
 import subprocess
 
+from agent.config import Config
+
 log = logging.getLogger("agent")
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -95,6 +97,28 @@ def restart_printing() -> str:
         return "the Windows Print Spooler was restarted"
 
     _run(["systemctl", "restart", "cups"])
+
+    # Restarting the daemon does not re-enable a printer CUPS has stopped.
+    # `printer-error-policy=stop-printer` is the default and the one this agent
+    # is built around -- a jam holds the job and marks the printer `disabled`,
+    # which is what `waiting.cups_watcher` reads to raise PrinterStuck and close
+    # the shop. But nothing then reopens it: the release in `report_recovered`
+    # needs a job to succeed, and no job can succeed while the printer is
+    # disabled. Without this line the console's restart button did not recover a
+    # jammed shop and somebody had to SSH in and type `cupsenable`.
+    #
+    # Best effort. A printer that is disabled for a reason that has not been
+    # cleared simply stops again on the next job, which is the correct outcome
+    # and is reported as such.
+    printer = Config.load().printer
+    if printer:
+        try:
+            _run(["cupsenable", printer])
+            _run(["cupsaccept", printer])
+        except Exception as exc:  # noqa: BLE001
+            return f"cups was restarted; {printer} could not be re-enabled: {exc}"
+        return f"cups was restarted and {printer} re-enabled"
+
     return "cups was restarted"
 
 

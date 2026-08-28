@@ -83,6 +83,25 @@ if ! lpstat -e | grep -q .; then
 fi
 lpstat -e | sed 's/^/    /'
 
+# CUPS's default error policy is `stop-printer`, and this agent depends on it.
+# A jam then holds the job and marks the printer `disabled`, which is what the
+# queue watcher reads to raise PrinterStuck, close the shop and stop it taking
+# money for prints that cannot come out.
+#
+# `abort-job` looks kinder and is the opposite: CUPS discards the failed job and
+# carries on, so it vanishes from `lpstat -o` exactly as a finished one does.
+# The agent cannot tell them apart, reports the job printed, and the student is
+# charged for paper that never moved. That was set on three live kiosks and
+# seventy-four jobs were reported printed while the shop produced nothing.
+if [[ -n "${PRINTER}" ]]; then
+  CURRENT=$(lpoptions -p "$PRINTER" 2>/dev/null | tr ' ' '
+' | grep '^printer-error-policy=' || true)
+  if [[ "$CURRENT" == *abort-job* || "$CURRENT" == *retry-job* ]]; then
+    echo "==> Putting $PRINTER back on stop-printer (was ${CURRENT#*=})"
+    lpadmin -p "$PRINTER" -o printer-error-policy=stop-printer
+  fi
+fi
+
 FOUND=$(lpstat -e | wc -l)
 if [[ -n "$PRINTER" ]]; then
   if ! lpstat -e | grep -qx "$PRINTER"; then
