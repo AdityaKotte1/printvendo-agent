@@ -231,7 +231,7 @@ Open PowerShell **as Administrator**, then:
 
 ```powershell
 cd "C:\Users\gurua\Downloads\Telegram Desktop\printit-upgrade\printvendo-agent"
-powershell -ExecutionPolicy Bypass -File install-windows.ps1 -Code dve_PASTE_YOURS_HERE -Api "http://192.168.1.7:8000" -Printer "HP LaserJet M1005"
+powershell -ExecutionPolicy Bypass -File install-windows.ps1 -Code dve_iNHcf8g3Nogr3FtNdx3mcEN6f3zyTg8k -Api "http://127.0.0.1:8000" -Printer "EPSON L6460 Series"
 ```
 
 Three things to replace: the code from B5, your `<LAN-IP>`, your printer name.
