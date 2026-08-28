@@ -126,3 +126,24 @@ def test_a_refused_report_raises_rather_than_passing_quietly():
 
     with pytest.raises(httpx.HTTPStatusError):
         _backend(client).report("prt_abc", "printed", sheets_used=3)
+
+
+# ── a clock, not a cable ────────────────────────────────────────────────────
+
+
+def test_a_not_yet_valid_certificate_is_recognised_as_a_clock():
+    """A Pi has no battery-backed clock. One that reboots without network sits
+    at the time it last knew and refuses every certificate as "not yet valid",
+    which reads as an unreachable server -- so somebody goes looking at the
+    wifi, or reinstalls, or rings somebody. It cost a real install.
+    """
+    from agent.__main__ import _looks_like_a_wrong_clock
+
+    ssl_error = Exception(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "certificate is not yet valid (_ssl.c:1029)"
+    )
+    assert _looks_like_a_wrong_clock(ssl_error) is True
+    assert _looks_like_a_wrong_clock(Exception("certificate has expired")) is True
+    # A genuine network failure must not be blamed on the clock.
+    assert _looks_like_a_wrong_clock(Exception("Connection refused")) is False

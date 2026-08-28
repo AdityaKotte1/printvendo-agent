@@ -16,6 +16,7 @@ import platform
 import socket
 import sys
 import time
+from datetime import UTC, datetime
 
 from agent.api import Backend, enrol
 from agent.config import Config, config_path, default_printer, printers
@@ -122,6 +123,18 @@ def _enrol(args) -> int:
     return 0
 
 
+def _looks_like_a_wrong_clock(exc: Exception) -> bool:
+    """Does this failure smell of a clock rather than a cable?
+
+    TLS says "certificate is not yet valid" when the machine believes it is
+    earlier than the certificate's start date, and "certificate has expired"
+    when it believes it is later. Both are almost always this, not a genuinely
+    bad certificate, on hardware with no clock of its own.
+    """
+    text = str(exc).lower()
+    return "certificate is not yet valid" in text or "certificate has expired" in text
+
+
 def _check() -> int:
     """Everything that has to be true before a student's job can come out.
 
@@ -154,6 +167,17 @@ def _check() -> int:
             Backend(config.api_url, config.token).heartbeat(agent_version=VERSION)
         except Exception as exc:  # noqa: BLE001
             problems.append(f"Could not reach {config.api_url}: {exc}")
+            # A Pi has no battery-backed clock, so one that reboots without
+            # network sits at the time it last knew and rejects every
+            # certificate as "not yet valid". That reads as an unreachable
+            # server, and somebody goes looking at the wifi. Named here because
+            # `check` exists to say what to do, not what went wrong.
+            if _looks_like_a_wrong_clock(exc):
+                problems.append(
+                    "That looks like this machine's clock, not the network. "
+                    "It thinks it is " + datetime.now(UTC).strftime("%d %b %Y %H:%M UTC")
+                    + ". Fix it with: sudo timedatectl set-ntp true"
+                )
 
     if problems:
         print("Not ready:")

@@ -33,6 +33,34 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# A Pi has no battery-backed clock. It learns the time from NTP at boot, so one
+# that booted without network -- or on a shop wifi blocking UDP 123 -- sits at
+# whatever time it last knew. Everything then fails at TLS with "certificate is
+# not yet valid", and apt refuses its own signatures as "not live until", which
+# reads like a broken mirror rather than a wrong clock. Checked here, before
+# apt and the venv, because the alternative is finding out at the last step.
+echo "==> Checking the clock"
+if ! REMOTE=$(curl -sI --max-time 15 http://deb.debian.org/ | grep -i '^date:' | cut -d' ' -f2-); then
+  echo "Could not reach the network to check the time. Fix the connection first." >&2
+  exit 1
+fi
+DRIFT=$(( $(date -u +%s) - $(date -u -d "$REMOTE" +%s) ))
+if [[ ${DRIFT#-} -gt 60 ]]; then
+  echo "This Pi's clock is out by ${DRIFT} seconds." >&2
+  echo "  it thinks:  $(date -u)" >&2
+  echo "  really is:  $REMOTE" >&2
+  echo >&2
+  echo "TLS will refuse the API certificate and apt will refuse its own" >&2
+  echo "signatures until this is right. Fix it with:" >&2
+  echo "    sudo timedatectl set-ntp true" >&2
+  echo "    sudo systemctl restart systemd-timesyncd" >&2
+  echo "If that does not work, this wifi is probably blocking NTP. Set it by" >&2
+  echo "hand and try again:" >&2
+  echo "    sudo date -s '$REMOTE'" >&2
+  exit 1
+fi
+echo "    clock is right, within ${DRIFT#-}s"
+
 echo "==> Installing what is needed (python, CUPS, ghostscript)"
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv cups ghostscript
