@@ -35,8 +35,8 @@ class FakeBackend:
         path.write_bytes(b"%PDF-1.4 pretend")
         return path
 
-    def report(self, task_id: str, state: str, *, sheets_printed: int | None = None) -> None:
-        self.reports.append((task_id, state, sheets_printed))
+    def report(self, task_id: str, state: str, *, sheets_used: int | None = None) -> None:
+        self.reports.append((task_id, state, sheets_used))
 
 
 def a_task(task_id: str = "tsk_1", **kwargs) -> dict:

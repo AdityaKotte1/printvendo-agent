@@ -201,7 +201,7 @@ def _do_one(
         # a job used -- one calculation decides the price, the tray count and
         # what the printer is asked for, and a second opinion here is how a
         # counter drifts from the physical tray.
-        _report(backend, task.task_id, "printed", sheets_printed=task.expected_sheets)
+        _report(backend, task.task_id, "printed", sheets_used=task.expected_sheets)
 
         # Paper came out. If this machine had closed the shop, reopen it --
         # and only a shop this mechanism closed, which the server decides
@@ -210,7 +210,7 @@ def _do_one(
             health.cleared(backend)
 
 
-def _report(backend, task_id: str, state: str, *, sheets_printed: int | None = None) -> None:
+def _report(backend, task_id: str, state: str, *, sheets_used: int | None = None) -> None:
     """Tell the server, and do not let saying so become the failure.
 
     A report that raises would leave a printed job looking failed, or -- worse,
@@ -218,7 +218,7 @@ def _report(backend, task_id: str, state: str, *, sheets_printed: int | None = N
     student has paid for.
     """
     try:
-        backend.report(task_id, state, sheets_printed=sheets_printed)
+        backend.report(task_id, state, sheets_used=sheets_used)
     except Exception as exc:  # noqa: BLE001
         log.error("could not report %s as %s: %s", task_id, state, exc)
 

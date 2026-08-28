@@ -77,11 +77,23 @@ class Backend:
                     handle.write(chunk)
         return destination
 
-    def report(self, task_id: str, state: str, *, sheets_printed: int | None = None) -> None:
-        """Say what happened. Paper is deducted from this."""
+    def report(self, task_id: str, state: str, *, sheets_used: int | None = None) -> None:
+        """Say what happened. Paper is deducted from this.
+
+        The field is `sheets_used` because that is what the server reads. It
+        was sent as `sheets_printed` and the server ignored it -- FastAPI drops
+        unknown fields rather than refusing them, so every report succeeded,
+        every job printed, and the tray count never moved. A shop would have
+        run out of paper with the system believing it was full, and the paper
+        watcher that exists to warn about exactly that would never have fired.
+
+        Nothing caught it because every test replaces this class with a fake
+        that takes the same wrong keyword, so the JSON body was the one thing
+        never exercised. `test_the_wire_format` is that test.
+        """
         payload: dict = {"state": state}
-        if sheets_printed is not None:
-            payload["sheets_printed"] = sheets_printed
+        if sheets_used is not None:
+            payload["sheets_used"] = sheets_used
 
         response = self._client.post(
             f"{self.base_url}/v1/device/tasks/{task_id}/status",
