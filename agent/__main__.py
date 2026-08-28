@@ -18,6 +18,8 @@ import sys
 import time
 from datetime import UTC, datetime
 
+import httpx
+
 from agent.api import Backend, enrol
 from agent.config import Config, config_path, default_printer, printers
 from agent.printing import IS_WINDOWS, ghostscript_path
@@ -123,6 +125,17 @@ def _enrol(args) -> int:
     return 0
 
 
+def _token_was_rejected(exc: Exception) -> bool:
+    """Did the server refuse this machine's credential?
+
+    Re-enrolling a kiosk rotates the token on its existing device row, so a
+    process that was already running keeps polling with one the server has just
+    invalidated -- 401 on every call, for ever, while the config file on disk
+    holds a perfectly good replacement.
+    """
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401
+
+
 def _looks_like_a_wrong_clock(exc: Exception) -> bool:
     """Does this failure smell of a clock rather than a cable?
 
@@ -212,9 +225,15 @@ def _run(*, once: bool = False) -> int:
                 # offline.
                 log.warning("heartbeat failed: %s", exc)
 
-        def beat() -> None:
+        def beat(backend: Backend = backend) -> None:
             """Called while the printer works, so a long job does not make this
-            machine look offline."""
+            machine look offline.
+
+            `backend` is bound as a default rather than captured, because the
+            loop replaces it when the server rejects a rotated token. Binding it
+            here means this pass beats with the client it was given, and the
+            next pass gets a fresh one.
+            """
             nonlocal last_heartbeat
             if time.monotonic() - last_heartbeat < HEARTBEAT_SECONDS:
                 return
@@ -228,6 +247,19 @@ def _run(*, once: bool = False) -> int:
             run_once(backend, printer=config.printer, on_tick=beat)
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the loop
             log.error("this pass failed: %s", exc)
+            if _token_was_rejected(exc):
+                # Somebody re-ran the installer. Read the file again rather than
+                # polling a dead credential until a person works out why a shop
+                # went quiet -- the new token is already sitting there.
+                config = Config.load()
+                if config.token and config.token != backend.token:
+                    log.warning("the token was replaced; picking up the new one")
+                    backend = Backend(config.api_url, config.token)
+                else:
+                    log.error(
+                        "this machine's token was refused and the one on disk is "
+                        "the same. Re-enrol it: printvendo-agent enrol --code dve_..."
+                    )
 
         if once:
             return 0

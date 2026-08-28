@@ -128,7 +128,15 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now printvendo-agent
+systemctl enable printvendo-agent
+# `enable --now` starts a service that is stopped and does nothing at all to one
+# that is already running. On a re-install that mattered: enrolling rotates the
+# token on the kiosk's existing device row, so the server had just invalidated
+# the token the running process was holding in memory. It went on polling with
+# it and got 401 on every call for ever, while `check` below read the *file* --
+# which has the new token -- and reported the kiosk healthy. A shop stopped
+# printing and the installer said it was fine.
+systemctl restart printvendo-agent
 
 echo "==> Checking it end to end"
 # The installer says whether the shop can print, rather than leaving somebody

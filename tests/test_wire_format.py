@@ -147,3 +147,29 @@ def test_a_not_yet_valid_certificate_is_recognised_as_a_clock():
     assert _looks_like_a_wrong_clock(Exception("certificate has expired")) is True
     # A genuine network failure must not be blamed on the clock.
     assert _looks_like_a_wrong_clock(Exception("Connection refused")) is False
+
+
+# ── a credential the server has replaced ────────────────────────────────────
+
+
+def test_a_401_is_recognised_as_a_rejected_token():
+    """Re-enrolling a kiosk rotates the token on its existing device row, so a
+    process already running keeps polling with one the server has just
+    invalidated. It cost two shops a morning: 401 on every heartbeat, every
+    command poll and every claim, while the config file on disk held a
+    perfectly good replacement and the installer's own `check` -- which reads
+    that file -- reported the kiosk healthy.
+    """
+    from agent.__main__ import _token_was_rejected
+
+    def _status(code: int) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", f"{BASE}/v1/device/tasks/next")
+        return httpx.HTTPStatusError(
+            "refused", request=request, response=httpx.Response(code, request=request)
+        )
+
+    assert _token_was_rejected(_status(401)) is True
+    # Everything else is a different problem and must not trigger a re-read.
+    assert _token_was_rejected(_status(403)) is False
+    assert _token_was_rejected(_status(500)) is False
+    assert _token_was_rejected(httpx.ConnectError("no route")) is False
