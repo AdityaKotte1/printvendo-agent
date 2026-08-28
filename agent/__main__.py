@@ -25,7 +25,13 @@ from agent.config import Config, config_path, default_printer, printers
 from agent.printing import IS_WINDOWS, ghostscript_path
 from agent.runner import run_once
 
-VERSION = "1.0.0"
+# Reported on every heartbeat and shown against the kiosk in the console, which
+# makes it the only way to tell from a desk which build a shop is running.
+# It sat at 1.0.0 through three releases that changed behaviour -- including the
+# one that fixed an agent locking itself out of its own kiosk -- so "is the new
+# version deployed?" could only be answered by SSHing in. Bump it whenever this
+# package changes, or the field is worse than absent: it looks like an answer.
+VERSION = "1.1.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
