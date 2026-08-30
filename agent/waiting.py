@@ -256,3 +256,27 @@ def windows_watcher(printer: str, ours: set[int]) -> Callable[[], JobState]:
         return windows_state_from_jobs(list(jobs), ours=ours)
 
     return _look
+
+
+def queue_depth(printer: str) -> int:
+    """How many jobs this machine already has in front of a new one.
+
+    Used to spread work across a pool, never to decide whether a job finished --
+    that is `watch_job`, which follows one known id. A count is enough here and
+    a wrong one costs a job a slightly longer wait, not a wrong outcome.
+
+    Raises rather than returning zero when the queue cannot be read: an
+    unreadable queue is not an empty one, and `pools.pick` treats the failure as
+    "ask a different machine" rather than "this one is free".
+    """
+    from agent.printing import IS_WINDOWS
+
+    if IS_WINDOWS:
+        return len(windows_job_ids(printer))
+
+    result = subprocess.run(
+        ["lpstat", "-o", printer], capture_output=True, text=True, timeout=30
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"lpstat -o {printer} failed")
+    return len([line for line in result.stdout.splitlines() if line.strip()])

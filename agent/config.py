@@ -12,8 +12,12 @@ import json
 import os
 import platform
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.pools import Pools
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -38,7 +42,18 @@ def config_path() -> Path:
 class Config:
     api_url: str = DEFAULT_API
     token: str = ""
+    # The machine a one-printer shop uses, which is nearly all of them. Kept as
+    # the answer when no pools are set rather than migrated to a one-item list:
+    # every kiosk in the field is configured this way and none should have to
+    # be touched.
     printer: str = ""
+    # A shop with several machines -- a xerox counter running two mono printers
+    # and a colour one off one agent. Mono work spreads across `printers_bw`,
+    # colour work across `printers_colour`, and colour never falls back to a
+    # mono machine: it would come out grey on a job the student paid colour
+    # prices for. See `agent.pools`.
+    printers_bw: list[str] = field(default_factory=list)
+    printers_colour: list[str] = field(default_factory=list)
     # Recorded so an operator can tell one physical box from another over SSH.
     # An identifier, never a credential -- it survives re-enrolment.
     device_key: str = ""
@@ -61,7 +76,36 @@ class Config:
 
     @property
     def ready(self) -> bool:
-        return bool(self.token and self.printer and self.api_url)
+        return bool(self.token and self.api_url and self.any_printer)
+
+    @property
+    def any_printer(self) -> bool:
+        """At least one machine to print on, however it was configured."""
+        return bool(self.printer or self.printers_bw or self.printers_colour)
+
+    @property
+    def every_printer(self) -> list[str]:
+        """Every machine this agent may use, without duplicates.
+
+        `check` validates all of them: a pool naming a printer CUPS has never
+        heard of fails one kind of job and only that kind, which is the sort of
+        fault that gets found by a student rather than by an installer.
+        """
+        seen: list[str] = []
+        for name in [self.printer, *self.printers_bw, *self.printers_colour]:
+            if name and name not in seen:
+                seen.append(name)
+        return seen
+
+    @property
+    def pools(self) -> "Pools":
+        from agent.pools import Pools
+
+        return Pools(
+            bw=list(self.printers_bw),
+            colour=list(self.printers_colour),
+            fallback=self.printer,
+        )
 
 
 def printers() -> list[str]:

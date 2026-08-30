@@ -22,8 +22,10 @@ import httpx
 
 from agent.api import Backend, enrol
 from agent.config import Config, config_path, default_printer, printers
+from agent.pools import pick, pool_for
 from agent.printing import IS_WINDOWS, ghostscript_path
 from agent.runner import run_once
+from agent.waiting import queue_depth
 
 # Reported on every heartbeat and shown against the kiosk in the console, which
 # makes it the only way to tell from a desk which build a shop is running.
@@ -31,7 +33,7 @@ from agent.runner import run_once
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -53,6 +55,25 @@ def main(argv: list[str] | None = None) -> int:
         "--printer",
         default=None,
         help="which printer to use; only needed when the machine has more than one",
+    )
+    # A xerox counter runs two mono machines and a colour one off one agent.
+    # Repeatable, and the order is the order they are preferred in when both
+    # are idle -- so an owner can say which machine they would rather wear out.
+    joined.add_argument(
+        "--bw",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="a printer for black-and-white work; repeat for more than one",
+    )
+    joined.add_argument(
+        "--colour",
+        "--color",
+        action="append",
+        default=None,
+        dest="colour",
+        metavar="NAME",
+        help="a printer for colour work; repeat for more than one",
     )
 
     commands.add_parser("check", help="is this machine ready to print")
@@ -95,7 +116,25 @@ def _enrol(args) -> int:
     if args.api:
         config.api_url = args.api
 
-    printer = args.printer or config.printer or default_printer()
+    bw = list(args.bw or [])
+    colour = list(args.colour or [])
+    if bw or colour:
+        missing = [name for name in (*bw, *colour) if name not in printers()]
+        if missing:
+            print("This machine has no printer called: " + ", ".join(missing))
+            print("What it does have:")
+            for name in printers():
+                print(f"  {name}")
+            return 1
+        config.printers_bw = bw
+        config.printers_colour = colour
+        # The single printer stays as the fallback for anything that asks
+        # without knowing about pools, and so an operator can drop back to one
+        # machine by clearing the pools alone.
+        printer = args.printer or config.printer or (bw or colour)[0]
+    else:
+        printer = args.printer or config.printer or default_printer()
+
     if not printer:
         found = printers()
         if not found:
@@ -167,13 +206,24 @@ def _check() -> int:
         problems.append(
             "This machine is not enrolled. Run: printvendo-agent enrol --code dve_..."
         )
-    if not config.printer:
+    if not config.any_printer:
         problems.append("No printer chosen. Run: printvendo-agent printers")
-    elif config.printer not in printers():
-        problems.append(
-            f"The printer '{config.printer}' is not there any more. "
-            "Run: printvendo-agent printers"
-        )
+    else:
+        # Every machine in every pool, not just the fallback. A pool naming a
+        # printer CUPS has never heard of fails one kind of job and only that
+        # kind -- the sort of fault a student finds rather than an installer.
+        here = printers()
+        for name in config.every_printer:
+            if name not in here:
+                problems.append(
+                    f"The printer '{name}' is not there any more. "
+                    "Run: printvendo-agent printers"
+                )
+        if config.printers_bw and not config.printers_colour:
+            problems.append(
+                "No colour printer is configured, so colour jobs will fail. "
+                "Add one with: printvendo-agent enrol --colour NAME"
+            )
 
     if IS_WINDOWS:
         try:
@@ -216,7 +266,25 @@ def _run(*, once: bool = False) -> int:
         return 1
 
     backend = Backend(config.api_url, config.token)
-    log.info("printing to %s for %s", config.printer, config.api_url)
+
+    def choose(task) -> str | None:
+        """Which machine this job goes to, asked once per job.
+
+        Re-read from `config` each time rather than captured, so a pool changed
+        by a re-enrol is picked up on the next job rather than at the next
+        restart.
+        """
+        return pick(pool_for(config.pools, colour=task.colour), queue_depth)
+
+    if config.pools.configured:
+        log.info(
+            "printing for %s -- mono: %s | colour: %s",
+            config.api_url,
+            ", ".join(config.printers_bw) or "none",
+            ", ".join(config.printers_colour) or "none",
+        )
+    else:
+        log.info("printing to %s for %s", config.printer, config.api_url)
 
     last_heartbeat = 0.0
     while True:
@@ -250,7 +318,7 @@ def _run(*, once: bool = False) -> int:
                 log.warning("heartbeat failed: %s", exc)
 
         try:
-            run_once(backend, printer=config.printer, on_tick=beat)
+            run_once(backend, printer=config.printer, choose=choose, on_tick=beat)
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the loop
             log.error("this pass failed: %s", exc)
             if _token_was_rejected(exc):

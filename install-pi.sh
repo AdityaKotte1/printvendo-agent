@@ -12,18 +12,26 @@ set -euo pipefail
 API="https://api.printvendo.com"
 CODE=""
 PRINTER=""
+# A xerox counter runs several machines off one agent. Space-separated here
+# because bash arrays through getopts are more trouble than they are worth for
+# two flags; the agent takes them one --bw / --colour at a time.
+BW=""
+COLOUR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --code) CODE="$2"; shift 2 ;;
     --api) API="$2"; shift 2 ;;
     --printer) PRINTER="$2"; shift 2 ;;
+    --bw) BW="$BW $2"; shift 2 ;;
+    --colour|--color) COLOUR="$COLOUR $2"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$CODE" ]]; then
   echo "Usage: sudo bash install-pi.sh --code dve_... [--printer NAME] [--api URL]" >&2
+  echo "  several machines: --bw 'Mono-1' --bw 'Mono-2' --colour 'Colour-1'" >&2
   echo "Get the code from the Printvendo admin console, for this shop." >&2
   exit 1
 fi
@@ -108,10 +116,11 @@ if [[ -n "$PRINTER" ]]; then
     echo "There is no printer called '$PRINTER' on this Pi. Use one of the names above." >&2
     exit 1
   fi
-elif [[ "$FOUND" -gt 1 ]]; then
+elif [[ "$FOUND" -gt 1 && -z "$BW" && -z "$COLOUR" ]]; then
   # Guessing between two printers means somebody's dissertation on the label
   # machine.
-  echo "This Pi has $FOUND printers. Run again with --printer NAME." >&2
+  echo "This Pi has $FOUND printers. Run again with --printer NAME," >&2
+  echo "or split them: --bw 'Mono-1' --bw 'Mono-2' --colour 'Colour-1'" >&2
   exit 1
 fi
 
@@ -124,6 +133,8 @@ python3 -m venv /opt/printvendo/venv
 echo "==> Enrolling this machine"
 ENROL=(enrol --code "$CODE" --api "$API")
 [[ -n "$PRINTER" ]] && ENROL+=(--printer "$PRINTER")
+for NAME in $BW; do ENROL+=(--bw "$NAME"); done
+for NAME in $COLOUR; do ENROL+=(--colour "$NAME"); done
 /opt/printvendo/venv/bin/printvendo-agent "${ENROL[@]}"
 
 echo "==> Installing the service"

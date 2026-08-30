@@ -249,3 +249,93 @@ def test_a_job_that_waits_its_turn_says_nothing_until_it_starts(tmp_path):
     run_once(backend, printer="HP-01", workspace=tmp_path, printer_fn=printer_that_waits)
 
     assert [state for _, state, _ in backend.reports] == ["failed"]
+
+
+# ── a shop with several machines ────────────────────────────────────────────
+
+
+def _sent_to(record: list[tuple[str, str]]):
+    """A printer that records which machine each job went to."""
+
+    def _print(task: Task, *, file_path: Path, printer: str, on_state=None, **_) -> None:
+        if on_state:
+            on_state(JobState.PRINTING)
+        record.append((task.task_id, printer))
+
+    return _print
+
+
+def test_colour_and_mono_jobs_go_to_different_machines(tmp_path):
+    """A xerox counter runs two mono printers and a colour one off one agent.
+    The kiosk is still one kiosk; the choice is made here, per job, from what
+    the student paid for.
+    """
+    from agent.pools import Pools, pick, pool_for
+
+    pools = Pools(bw=["Mono-1", "Mono-2"], colour=["Colour-1"])
+    backend = FakeBackend([
+        a_task("tsk_mono", colour=False),
+        a_task("tsk_colour", colour=True),
+    ])
+    sent: list[tuple[str, str]] = []
+
+    run_once(
+        backend,
+        printer="unused",
+        choose=lambda task: pick(pool_for(pools, colour=task.colour), lambda _n: 0),
+        workspace=tmp_path,
+        printer_fn=_sent_to(sent),
+    )
+
+    assert dict(sent) == {"tsk_mono": "Mono-1", "tsk_colour": "Colour-1"}
+
+
+def test_a_busy_mono_printer_hands_the_job_to_the_other_one(tmp_path):
+    """The whole point of a pool: a rush does not queue behind one machine."""
+    from agent.pools import Pools, pick, pool_for
+
+    pools = Pools(bw=["Mono-1", "Mono-2"])
+    depths = {"Mono-1": 6, "Mono-2": 0}
+    backend = FakeBackend([a_task("tsk_1", colour=False)])
+    sent: list[tuple[str, str]] = []
+
+    run_once(
+        backend,
+        printer="unused",
+        choose=lambda task: pick(pool_for(pools, colour=task.colour), depths.__getitem__),
+        workspace=tmp_path,
+        printer_fn=_sent_to(sent),
+    )
+
+    assert sent == [("tsk_1", "Mono-2")]
+
+
+def test_colour_work_with_no_colour_machine_fails_rather_than_printing_grey(tmp_path):
+    """The student paid colour prices. A grey print is a refund and a
+    complaint; a failed one is a job somebody can re-run."""
+    from agent.pools import Pools, pick, pool_for
+
+    pools = Pools(bw=["Mono-1"])
+    backend = FakeBackend([a_task("tsk_colour", colour=True)])
+    sent: list[tuple[str, str]] = []
+
+    run_once(
+        backend,
+        printer="unused",
+        choose=lambda task: pick(pool_for(pools, colour=task.colour), lambda _n: 0),
+        workspace=tmp_path,
+        printer_fn=_sent_to(sent),
+    )
+
+    assert sent == []
+    assert backend.reports == [("tsk_colour", "failed", None)]
+
+
+def test_a_shop_with_one_printer_still_uses_it(tmp_path):
+    """No chooser passed: every kiosk in the field behaves exactly as before."""
+    backend = FakeBackend([a_task("tsk_1")])
+    sent: list[tuple[str, str]] = []
+
+    run_once(backend, printer="EPSON_L6460", workspace=tmp_path, printer_fn=_sent_to(sent))
+
+    assert sent == [("tsk_1", "EPSON_L6460")]

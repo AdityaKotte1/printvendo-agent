@@ -47,6 +47,7 @@ def run_once(
     backend,
     *,
     printer: str,
+    choose: "Callable[[Task], str | None] | None" = None,
     workspace: Path | None = None,
     printer_fn: PrinterFn | None = None,
     max_per_pass: int = MAX_PER_PASS,
@@ -75,10 +76,23 @@ def run_once(
 
         task = Task.from_response(body)
         handled += 1
+        # A shop with several machines picks per job -- mono work to the mono
+        # printers, colour to the colour ones, and the least busy of whichever
+        # pool applies. A shop with one machine passes no chooser and nothing
+        # about its behaviour changes.
+        chosen = choose(task) if choose is not None else printer
+        if not chosen:
+            # The pool for this kind of work is empty. Colour work at a mono-only
+            # shop is the case that matters: printing it in grey would be worse
+            # than refusing it, because the student paid colour prices.
+            log.error("no printer configured for %s work", "colour" if task.colour else "mono")
+            _report(backend, task.task_id, "failed")
+            continue
+
         _do_one(
             backend,
             task,
-            printer=printer,
+            printer=chosen,
             workspace=workspace,
             printer_fn=printer_fn,
             on_tick=on_tick,
