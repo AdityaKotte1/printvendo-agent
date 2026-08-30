@@ -173,3 +173,29 @@ def test_a_401_is_recognised_as_a_rejected_token():
     assert _token_was_rejected(_status(403)) is False
     assert _token_was_rejected(_status(500)) is False
     assert _token_was_rejected(httpx.ConnectError("no route")) is False
+
+
+# ── a shop never learns what a student called their file ────────────────────
+
+
+def test_a_download_is_named_after_the_task_not_the_student_file(tmp_path):
+    """The bytes are deleted when the job ends; the name is not. `lp` submits
+    under the filename on disk, and CUPS keeps job history long after removing
+    the document -- so a shop's completed-jobs list would read "Medical Results
+    Ravi Kumar.pdf" for as long as the Pi runs.
+    """
+    from types import SimpleNamespace
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"%PDF-1.4 pretend")
+        )
+    )
+    task = SimpleNamespace(
+        task_id="prt_abc", filename="Medical Results Ravi Kumar.pdf"
+    )
+
+    saved = _backend(client).download(task, tmp_path)
+
+    assert saved.name == "prt_abc.pdf"
+    assert "Ravi" not in str(saved)

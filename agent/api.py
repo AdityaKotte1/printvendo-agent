@@ -65,8 +65,18 @@ class Backend:
         Streamed to disk rather than read into memory: a sixty-megabyte upload
         on a Pi with half a gigabyte of RAM is the difference between printing
         and being killed by the kernel.
+
+        **Named after the task, never after the student's file.** The bytes are
+        deleted the moment the job ends, but the *name* outlives them: `lp`
+        submits the job under the filename on disk, and CUPS keeps job history
+        long after it has removed the document itself. A shop's completed-jobs
+        list -- `lpstat -W completed`, or the CUPS web interface anyone on that
+        machine can open -- would otherwise read "Medical Results Ravi
+        Kumar.pdf" for as long as the Pi runs. The server already anonymises its
+        own Content-Disposition for the same reason; this was the one place the
+        original name still reached a disk in a shop.
         """
-        destination = into / task.filename
+        destination = into / f"{task.task_id}.pdf"
         with self._client.stream(
             "GET", f"{self.base_url}/v1/device/tasks/{task.task_id}/file",
             headers=self._headers,
