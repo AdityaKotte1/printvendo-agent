@@ -280,3 +280,65 @@ def queue_depth(printer: str) -> int:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"lpstat -o {printer} failed")
     return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
+# How long to wait for the printer to finish putting paper out after the
+# spooler has let the job go. Generous: a long colour job genuinely takes
+# minutes, and the cost of waiting too long is a slower shop, while the cost of
+# not waiting is two students' pages in one pile.
+SETTLE_TIMEOUT = 10 * 60
+SETTLE_INTERVAL = 2.0
+
+
+def cups_is_idle(state_output: str) -> bool:
+    """Is the printer itself done, as opposed to the queue being empty?
+
+    `lpstat -p` says "now printing" while paper is moving and "is idle" when it
+    has stopped. That is a different question from `lpstat -o`, which empties as
+    soon as CUPS has finished *sending* -- a fifteen-page job streams into the
+    printer's buffer in seconds and leaves the queue while page five is coming
+    out.
+
+    Unreadable output is not idle. Treating "I could not tell" as "finished" is
+    how the next job starts on top of this one.
+    """
+    text = state_output.lower()
+    if "now printing" in text or "processing" in text:
+        return False
+    return "is idle" in text
+
+
+def wait_until_idle(
+    printer: str,
+    *,
+    timeout: float = SETTLE_TIMEOUT,
+    interval: float = SETTLE_INTERVAL,
+    look: Callable[[], str] | None = None,
+) -> bool:
+    """Block until the printer has stopped, or the deadline passes.
+
+    Returns whether it actually went idle, so a caller can say "we stopped
+    waiting" rather than "it finished". The job is already out of the queue by
+    the time this runs -- this is only about spacing the next one, so a timeout
+    is a slower shop and never a wrong report.
+    """
+    def _state() -> str:
+        result = subprocess.run(
+            ["lpstat", "-p", printer], capture_output=True, text=True, timeout=30
+        )
+        return result.stdout if result.returncode == 0 else ""
+
+    read = look or _state
+    deadline = time.monotonic() + timeout
+
+    while True:
+        try:
+            if cups_is_idle(read()):
+                return True
+        except Exception as exc:  # noqa: BLE001 - a printer we cannot ask is not a printer we may rush
+            log.warning("could not read printer state: %s", exc)
+
+        if time.monotonic() >= deadline:
+            log.warning("%s did not go idle within %ss; sending the next job", printer, timeout)
+            return False
+        time.sleep(interval)

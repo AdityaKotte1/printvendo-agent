@@ -25,6 +25,7 @@ from agent.config import Config, config_path, default_printer, printers
 from agent.pools import pick, pool_for
 from agent.printing import IS_WINDOWS, ghostscript_path
 from agent.runner import run_once
+from agent.single import AlreadyRunning, only_one_agent
 from agent.waiting import queue_depth
 
 # Reported on every heartbeat and shown against the kiosk in the console, which
@@ -33,7 +34,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -264,6 +265,27 @@ def _run(*, once: bool = False) -> int:
     if not config.ready:
         print("This machine is not set up yet. Run: printvendo-agent check")
         return 1
+
+    try:
+        with only_one_agent():
+            return _loop(config, once=once)
+    except AlreadyRunning:
+        # Two agents both claim work. Nothing prints twice -- the server hands
+        # a task out once -- but they submit independently, so the shop's queue
+        # ends up several jobs deep with no gap, and a student walking up while
+        # somebody else's fifteen pages come out takes the wrong sheets.
+        #
+        # It happens by running this over SSH to watch it work and walking away
+        # with it still running beside the service. So it is refused rather
+        # than left to be remembered.
+        print("Another printvendo-agent is already running on this machine.")
+        print("Only one may print, or students get each other's pages.")
+        print("  what is running:            ps aux | grep printvendo-agent")
+        print("  watch the service instead:  journalctl -u printvendo-agent -f")
+        return 1
+
+
+def _loop(config: Config, *, once: bool = False) -> int:
 
     backend = Backend(config.api_url, config.token)
 

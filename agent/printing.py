@@ -31,6 +31,7 @@ from agent.waiting import (
     JobState,
     cups_job_id,
     cups_watcher,
+    wait_until_idle,
     watch_job,
     windows_job_ids,
     windows_watcher,
@@ -317,3 +318,16 @@ def print_task(
             "the printer still has this job after a long wait -- it may be out "
             "of paper, jammed, or switched off"
         )
+
+    # The queue letting go means CUPS finished *sending*, not that paper has
+    # stopped. A fifteen-page job streams into the printer's buffer in seconds
+    # and leaves `lpstat -o` while page five is coming out -- so without this
+    # the next student's job was submitted on top of it, and two people's pages
+    # arrived in one pile with nothing to separate them. Students were taking
+    # each other's sheets off the top.
+    #
+    # Only about spacing, never about the outcome: this job is already out of
+    # the queue and has already been judged. A timeout here is a slower shop,
+    # not a wrong report, which is why it returns rather than raising.
+    if not IS_WINDOWS:
+        wait_until_idle(printer)

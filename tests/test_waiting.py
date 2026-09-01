@@ -275,3 +275,56 @@ def test_one_finished_job_does_not_make_a_second_one_finished():
     )
 
     assert state is JobState.PRINTING
+
+
+# ── the printer, not the queue ──────────────────────────────────────────────
+
+
+def test_a_printer_that_is_still_printing_is_not_idle():
+    """`lpstat -o` empties when CUPS has finished *sending*. A fifteen-page job
+    streams into the printer's buffer in seconds and leaves the queue while page
+    five is coming out -- so the next student's job went on top of it and two
+    people's pages arrived in one pile."""
+    from agent.waiting import cups_is_idle
+
+    assert cups_is_idle("printer Shop now printing Shop-42.  enabled since Mon") is False
+
+
+def test_an_idle_printer_is_idle():
+    from agent.waiting import cups_is_idle
+
+    assert cups_is_idle("printer Shop is idle.  enabled since Mon 01 Sep") is True
+
+
+def test_output_that_cannot_be_read_is_not_idle():
+    """"I could not tell" must not mean "finished" -- that is how the next job
+    starts on top of this one."""
+    from agent.waiting import cups_is_idle
+
+    assert cups_is_idle("") is False
+    assert cups_is_idle("lpstat: Bad file descriptor") is False
+
+
+def test_waiting_returns_once_the_printer_stops():
+    from agent.waiting import wait_until_idle
+
+    states = iter([
+        "printer Shop now printing Shop-42.",
+        "printer Shop now printing Shop-42.",
+        "printer Shop is idle.",
+    ])
+
+    assert wait_until_idle("Shop", interval=0, look=lambda: next(states)) is True
+
+
+def test_waiting_gives_up_rather_than_blocking_for_ever():
+    """A timeout here is a slower shop, never a wrong report: the job has
+    already left the queue and has already been judged."""
+    from agent.waiting import wait_until_idle
+
+    assert (
+        wait_until_idle(
+            "Shop", timeout=0, interval=0, look=lambda: "printer Shop now printing Shop-42."
+        )
+        is False
+    )
