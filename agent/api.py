@@ -35,7 +35,7 @@ class Backend:
     def _headers(self) -> dict[str, str]:
         return {"X-Device-Token": self.token}
 
-    def heartbeat(self, *, agent_version: str) -> None:
+    def heartbeat(self, *, agent_version: str, ssh_host: str | None = None) -> None:
         """Say the machine is alive.
 
         Whether a device is *online* is derived from this on the server, never
@@ -43,10 +43,16 @@ class Backend:
         going offline", which is why the old backend's status stayed ONLINE
         until somebody noticed.
         """
+        body: dict = {"agent_version": agent_version}
+        # Only when there is one. A kiosk with no tailnet has no answer, and
+        # sending null would overwrite the last good name the server had.
+        if ssh_host:
+            body["ssh_host"] = ssh_host
+
         response = self._client.post(
             f"{self.base_url}/v1/device/heartbeat",
             headers=self._headers,
-            json={"agent_version": agent_version},
+            json=body,
         )
         response.raise_for_status()
 

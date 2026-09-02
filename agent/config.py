@@ -148,3 +148,46 @@ def _windows_printers() -> list[str]:
 
     flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
     return [printer[2] for printer in win32print.EnumPrinters(flags)]
+
+
+def ssh_host() -> str | None:
+    """The name this machine can be reached by, for an operator who needs a shell.
+
+    A kiosk sits behind a shop's NAT, so there is no address anybody could work
+    out from the outside -- the machine has to say. Tailscale is what makes that
+    name reachable, and it is already on the estate, so its name is the one
+    worth reporting.
+
+    Returns None when there is no tailnet rather than falling back to the local
+    hostname. `raspberrypi` looks like an answer and reaches nothing, and a
+    console showing a command that cannot work is worse than one saying it does
+    not know.
+
+    An identifier, never a credential: it gets somebody as far as their own ssh
+    client, which authenticates exactly as it did before.
+    """
+    import json
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    try:
+        status = json.loads(result.stdout)
+    except ValueError:
+        return None
+
+    # DNSName is fully qualified with a trailing dot -- "pi-1.tail1234.ts.net."
+    # -- which ssh accepts but nobody wants to read or copy.
+    name = (status.get("Self") or {}).get("DNSName") or ""
+    name = name.rstrip(".")
+    return name or None

@@ -199,3 +199,64 @@ def test_a_download_is_named_after_the_task_not_the_student_file(tmp_path):
 
     assert saved.name == "prt_abc.pdf"
     assert "Ravi" not in str(saved)
+
+
+# ── where an operator can reach this machine ────────────────────────────────
+
+
+def test_a_heartbeat_carries_the_tailnet_name_when_there_is_one(sent):
+    """A kiosk is behind a shop's NAT, so nobody outside can work out where it
+    is. The machine has to say, and the heartbeat is the one thing it says
+    regularly."""
+    seen, client = sent
+
+    _backend(client).heartbeat(agent_version="1.5.1", ssh_host="pi-1.tail1234.ts.net")
+
+    assert seen[0]["body"] == {
+        "agent_version": "1.5.1",
+        "ssh_host": "pi-1.tail1234.ts.net",
+    }
+
+
+def test_a_machine_with_no_tailnet_sends_no_host_at_all(sent):
+    """Not null: sending one would overwrite the last good name the server
+    had, and the name somebody would try first is the one it knew before."""
+    seen, client = sent
+
+    _backend(client).heartbeat(agent_version="1.5.1", ssh_host=None)
+
+    assert seen[0]["body"] == {"agent_version": "1.5.1"}
+
+
+def test_a_trailing_dot_is_stripped_from_the_tailnet_name(monkeypatch):
+    """Tailscale reports "pi-1.tail1234.ts.net." fully qualified. ssh accepts
+    it, but nobody wants to read or copy it."""
+    import json
+    import subprocess
+
+    from agent import config as config_module
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps({"Self": {"DNSName": "pi-1.tail1234.ts.net."}}),
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert config_module.ssh_host() == "pi-1.tail1234.ts.net"
+
+
+def test_no_tailscale_means_no_host_rather_than_a_hostname(monkeypatch):
+    """`raspberrypi` looks like an answer and reaches nothing. A console saying
+    it does not know beats one showing a command that cannot work."""
+    import subprocess
+
+    from agent import config as config_module
+
+    def missing(*_args, **_kwargs):
+        raise FileNotFoundError("tailscale")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+
+    assert config_module.ssh_host() is None

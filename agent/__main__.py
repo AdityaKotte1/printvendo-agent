@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 import httpx
 
 from agent.api import Backend, enrol
-from agent.config import Config, config_path, default_printer, printers
+from agent.config import Config, config_path, default_printer, printers, ssh_host
 from agent.pools import pick, pool_for
 from agent.printing import IS_WINDOWS, ghostscript_path
 from agent.runner import run_once
@@ -34,7 +34,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -313,7 +313,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
         now = time.monotonic()
         if now - last_heartbeat >= HEARTBEAT_SECONDS:
             try:
-                backend.heartbeat(agent_version=VERSION)
+                backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
                 last_heartbeat = now
             except Exception as exc:  # noqa: BLE001
                 # Not fatal. A missed heartbeat makes the kiosk look offline to
@@ -334,7 +334,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
             if time.monotonic() - last_heartbeat < HEARTBEAT_SECONDS:
                 return
             try:
-                backend.heartbeat(agent_version=VERSION)
+                backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
                 last_heartbeat = time.monotonic()
             except Exception as exc:  # noqa: BLE001
                 log.warning("heartbeat failed: %s", exc)
