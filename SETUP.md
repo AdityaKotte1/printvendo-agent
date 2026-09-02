@@ -28,40 +28,35 @@ is the folder you are reading this in.
 
 ---
 
-# Part A — Install two things on the kiosk machine
+# Part A -- What gets installed for you
 
-Skip anything already installed. Check by opening PowerShell and typing the
-check command; if it prints a version, you have it.
+**Nothing here needs doing by hand any more.** Both installers fetch what they
+need:
 
-### 1. Python 3.11 or newer
+- On a **Raspberry Pi**, `install-pi.sh` installs python, CUPS and ghostscript
+  with apt.
+- On **Windows**, `install-windows.ps1` installs Python 3.12 and Ghostscript
+  with winget, machine-wide, and re-reads PATH itself so there is no "close and
+  reopen PowerShell" step to forget.
 
-Check: `python --version`
+This section used to be two pages of downloads, a tick box called "Add
+python.exe to PATH" that the whole thing depended on, and a note that
+Ghostscript does not add itself to PATH at all. Every one of those was a step
+to get wrong at a shop counter, so they are the installer's job now.
 
-> If it prints nothing, or opens the Microsoft Store, you do **not** have it.
-> The `python` that ships on Windows PATH is a stub that opens the Store. The
-> installer detects this and stops.
+### If winget is missing
 
-Get it: <https://www.python.org/downloads/> → the big yellow button.
-**Tick "Add python.exe to PATH"** on the first screen of the installer. That tick
-box is the whole difference between this working and not.
+Windows 10 before version 1809 has no winget, and a fresh install sometimes
+needs it updating from the Microsoft Store first. The installer says so and
+stops rather than failing obscurely. Then, by hand:
 
-Close and reopen PowerShell afterwards, then check again.
+- **Python 3.11+** from <https://www.python.org/downloads/>, ticking **"Add
+  python.exe to PATH"** on the first screen.
+- **Ghostscript AGPL**, 64-bit, from <https://ghostscript.com/releases/gsdnld.html>.
+  It will not add itself to PATH, and does not need to -- the agent looks under
+  `C:\Program Files\gs` as well.
 
-### 2. Ghostscript
-
-This is what actually sends the PDF to the printer with the right colour, duplex
-and page range. Without it nothing prints.
-
-Check: `gswin64c --version`
-
-Get it: <https://ghostscript.com/releases/gsdnld.html> → **Ghostscript AGPL
-Release**, the 64-bit Windows installer. Accept the defaults.
-
-Close and reopen PowerShell, then check again. If it still says the command is
-not found, it installed to `C:\Program Files\gs\gs10.xx\bin` and did not add
-itself to PATH — add that folder to PATH, or reinstall ticking the PATH option.
-
-**On a Raspberry Pi you install nothing by hand.** The Pi installer does it.
+Run the installer again afterwards.
 
 ---
 
@@ -193,18 +188,35 @@ An admin can also do this over the API: `PUT /v1/admin/kiosks/{id}/location`.
 
 ---
 
-# Part C — Turn a Windows PC into the kiosk
+# Part C -- Turn a Windows PC into the kiosk
 
-Everything in this part happens on the machine **with the printer attached**,
-in the **agent** folder:
+Everything in this part happens on the machine **with the printer attached**.
+
+### C0. Get the agent onto that machine
+
+Use **PowerShell**, not the black `cmd` window. They are different shells and
+`cmd` understands none of the commands below -- `$env:USERPROFILE` there gives
+"The system cannot find the path specified", which sounds like a missing folder
+and is not.
+
+Open **PowerShell as Administrator**: Start, type `powershell`, right-click,
+**Run as administrator**. Administrator is not optional: the installer writes to
+`Program Files` and registers a task that runs as SYSTEM.
+
+A shop PC has no `git`, and does not need one:
 
 ```powershell
-cd "C:\Users\gurua\Downloads\Telegram Desktop\printit-upgrade\printvendo-agent"
+cd $env:USERPROFILE
+Invoke-WebRequest -Uri "https://github.com/AdityaKotte1/printvendo-agent/archive/refs/heads/main.zip" -OutFile agent.zip
+Expand-Archive agent.zip -DestinationPath . -Force
+cd printvendo-agent-main
 ```
 
-If that is a different PC, copy the whole `printvendo-agent` folder over first —
-USB stick, network share, whatever. The installer installs *from the folder it
-sits in*, so it must be a real folder on that machine.
+A USB stick works just as well -- the installer installs *from the folder it
+sits in*, so it only has to be a real folder on that machine.
+
+**Python and Ghostscript are installed for you** by the installer in C3. There
+is nothing to download by hand and no PATH box to tick.
 
 ### C1. Print a test page yourself, first
 
