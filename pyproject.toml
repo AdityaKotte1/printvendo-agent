@@ -1,6 +1,6 @@
 [project]
 name = "printvendo-agent"
-version = "1.5.0"
+version = "1.5.1"
 description = "The Printvendo device agent: one agent, Raspberry Pi and Windows."
 requires-python = ">=3.11"
 dependencies = [
