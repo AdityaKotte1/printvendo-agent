@@ -26,7 +26,9 @@ call and turns a silent lie into a sentence an operator can act on.
 
 import logging
 import platform
+import shlex
 import subprocess
+import sys
 
 from agent.config import Config
 
@@ -34,12 +36,23 @@ log = logging.getLogger("agent")
 
 IS_WINDOWS = platform.system() == "Windows"
 
+# Where an update comes from. The zip rather than a git URL, so no machine needs
+# git installed; the branch rather than a tag, so pushing is the release.
+UPDATE_SOURCE = (
+    "https://github.com/AdityaKotte1/printvendo-agent/archive/refs/heads/main.zip"
+)
+UPDATE_LOG = (
+    "C:/ProgramData/Printvendo/update.log" if IS_WINDOWS
+    else "/var/log/printvendo-update.log"
+)
+
 # Long enough for a service that is mid-restart, short enough that a wedged
 # service manager does not hold the print loop.
 TIMEOUT = 90
 
 RESTART_PRINTING = "restart_printing"
 RESTART_AGENT = "restart_agent"
+UPDATE_AGENT = "update_agent"
 
 NOT_A_SERVICE = (
     "this agent is not running as a service on this machine, so nothing would "
@@ -171,6 +184,47 @@ def restart_agent() -> str:
     return "this agent is restarting"
 
 
+def update_agent() -> str:
+    """Fetch the current agent and restart into it.
+
+    Installed from the project's zip on GitHub rather than from a git checkout.
+    A shop PC has no git, and a Pi that does has a clone somewhere nobody
+    recorded -- one machine had a nested copy from an old tar extract, so a
+    pull in one directory and an install from the other updated nothing. A URL
+    depends on neither.
+
+    Reported before it happens, like `restart_agent` and for the same reason:
+    the process that would report afterwards is the one being replaced. So the
+    honest answer is "this is updating", and the console's version, which comes
+    from the heartbeat, is what says whether it worked. If it does not change
+    within a minute or two, it did not.
+
+    Output goes to a log rather than nowhere, because a detached command that
+    fails silently leaves an operator with a shop that did not come back and
+    nothing to read.
+    """
+    installer = [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", UPDATE_SOURCE]
+
+    if IS_WINDOWS:
+        quoted = " ".join(f"'{part}'" for part in installer)
+        _detach([
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            f"& {quoted} *>> '{UPDATE_LOG}'; "
+            f"Stop-ScheduledTask -TaskName {WINDOWS_AGENT_TASK}; "
+            f"Start-Sleep -Seconds 2; "
+            f"Start-ScheduledTask -TaskName {WINDOWS_AGENT_TASK}",
+        ])
+        return f"updating from {UPDATE_SOURCE}, then restarting"
+
+    joined = " ".join(shlex.quote(part) for part in installer)
+    _detach([
+        "sh", "-c",
+        f"{joined} >> {shlex.quote(str(UPDATE_LOG))} 2>&1; "
+        f"systemctl restart {LINUX_AGENT_UNIT} >> {shlex.quote(str(UPDATE_LOG))} 2>&1",
+    ])
+    return f"updating from {UPDATE_SOURCE}, then restarting"
+
+
 def _must_be_supervised() -> None:
     """Refuse before the caller commits to saying this worked."""
     if not _supervises_us():
@@ -181,6 +235,9 @@ def _must_be_supervised() -> None:
 # `restart_agent` runs, the caller has already told the server it worked,
 # because in a moment there will be no process left to tell it anything.
 restart_agent.precheck = _must_be_supervised
+# Same reason, more sharply: an update that installs and then cannot restart
+# leaves the shop running the old code with no sign anything happened.
+update_agent.precheck = _must_be_supervised
 
 
 def _detach(command: list[str]) -> None:
@@ -206,6 +263,7 @@ def _detach(command: list[str]) -> None:
 HANDLERS = {
     RESTART_PRINTING: (restart_printing, False),
     RESTART_AGENT: (restart_agent, True),
+    UPDATE_AGENT: (update_agent, True),
 }
 
 

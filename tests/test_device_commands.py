@@ -315,3 +315,63 @@ def test_an_unsupervised_agent_is_reported_failed(monkeypatch):
 
     assert [(c[0], c[1]) for c in backend.reported_commands] == [("cmd_1", False)]
     assert "not running as a service" in backend.reported_commands[-1][2]
+
+
+# ── updating from the console ───────────────────────────────────────────────
+
+
+def test_updating_installs_from_a_url_rather_than_a_checkout(monkeypatch):
+    """A shop PC has no git, and a Pi that has one keeps its clone somewhere
+    nobody recorded -- one machine had a nested copy from an old tar extract,
+    so pulling in one directory and installing from the other updated nothing.
+    A URL depends on neither."""
+    from agent import commands as mod
+
+    sent = []
+    monkeypatch.setattr(mod, "_detach", lambda cmd: sent.append(cmd))
+    monkeypatch.setattr(mod, "IS_WINDOWS", False)
+
+    said = mod.update_agent()
+
+    assert len(sent) == 1
+    script = " ".join(sent[0])
+    assert mod.UPDATE_SOURCE in script
+    assert "pip" in script and "install" in script
+    assert "updating" in said
+
+
+def test_updating_restarts_afterwards(monkeypatch):
+    """Installing without restarting leaves the new code on disk and the old
+    code in memory -- which is how a token rotation locked two shops out, and
+    how the console keeps reporting the version that is running rather than the
+    one that was installed."""
+    from agent import commands as mod
+
+    sent = []
+    monkeypatch.setattr(mod, "_detach", lambda cmd: sent.append(cmd))
+    monkeypatch.setattr(mod, "IS_WINDOWS", False)
+
+    mod.update_agent()
+
+    assert "systemctl restart" in " ".join(sent[0])
+
+
+def test_updating_is_refused_on_a_machine_nothing_supervises(monkeypatch):
+    """It installs and then restarts. With no service manager the restart
+    leaves nothing running, and the shop is off until somebody drives to it."""
+    from agent import commands as mod
+
+    monkeypatch.setattr(mod, "_supervises_us", lambda: False)
+
+    with pytest.raises(mod.CommandFailed):
+        mod.update_agent.precheck()
+
+
+def test_update_is_in_the_handler_table_as_ending_the_process(monkeypatch):
+    """The second half of the row is what tells the loop to stop claiming --
+    there is no point taking another command when this process is about to be
+    replaced."""
+    from agent.commands import HANDLERS, UPDATE_AGENT
+
+    action, ends = HANDLERS[UPDATE_AGENT]
+    assert ends is True
