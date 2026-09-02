@@ -34,7 +34,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the

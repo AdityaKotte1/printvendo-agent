@@ -216,12 +216,54 @@ def ghostscript_path(configured: str | None = None) -> str:
     for name in GHOSTSCRIPT_NAMES:
         if found := which(name):
             return found
+
+    # PATH is not where Ghostscript ends up. Its Windows installer does not add
+    # itself, so a perfectly good install is invisible to `which` and the agent
+    # reported "not installed" about software sitting right there. Looking in
+    # the place it actually goes costs one glob and removes a step somebody has
+    # to remember at a shop counter.
+    if IS_WINDOWS and (found := _ghostscript_in_program_files()):
+        return found
+
     # Named rather than guessed: a missing Ghostscript is an install problem
     # with a one-line fix, and it must not present as a printing failure.
     raise RuntimeError(
         "Ghostscript is not installed, or not on PATH. The agent prints with "
         "it. Install it and try again."
     )
+
+
+def _ghostscript_in_program_files() -> str | None:
+    """The newest Ghostscript under Program Files, if one is there.
+
+    Newest rather than first: a machine that has been upgraded keeps the old
+    directory, and running the older binary is a subtler fault than running
+    none -- it prints, slightly differently, and nobody knows why.
+    """
+    import os
+    import re
+
+    roots = [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ]
+
+    def version_of(directory: Path) -> tuple[int, ...]:
+        digits = re.findall(r"\d+", directory.name)
+        return tuple(int(part) for part in digits) or (0,)
+
+    candidates: list[Path] = []
+    for root in roots:
+        gs_root = Path(root) / "gs"
+        if not gs_root.is_dir():
+            continue
+        for directory in sorted(gs_root.iterdir(), key=version_of, reverse=True):
+            for name in ("gswin64c.exe", "gswin32c.exe"):
+                candidate = directory / "bin" / name
+                if candidate.is_file():
+                    candidates.append(candidate)
+
+    return str(candidates[0]) if candidates else None
 
 
 def build_command(

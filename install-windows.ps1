@@ -61,33 +61,83 @@ function Invoke-AsSystem($arguments) {
     return @{ Lines = @($lines | Where-Object { $_ -notlike "EXIT:*" }); Code = $code }
 }
 
-Write-Host "==> Checking what is installed"
+# Refresh PATH from the registry, so something installed a moment ago in this
+# same script is visible without reopening PowerShell. A process inherits its
+# environment at start and never hears about a change -- which is why every set
+# of install instructions ends with "close and reopen the terminal", and why
+# somebody who does not gets a confusing failure instead of a working agent.
+function Sync-Path {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = ($machine, $user | Where-Object { $_ }) -join ";"
+}
 
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    Need "Python" "Install Python 3.11+ from python.org, ticking 'Add to PATH'."
-    exit 1
+function Have-Python {
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $null }
+    # The Microsoft Store stub sits on PATH as `python` and does nothing but
+    # open the Store. It looks exactly like Python until the venv fails.
+    $v = & python -c "import sys; print('%s.%s' % sys.version_info[:2])" 2>$null
+    if (-not $v) { return $null }
+    if ([version]$v -lt [version]"3.11") { return $null }
+    return $v
 }
-# The Microsoft Store stub is on PATH as `python` and does nothing but open the
-# Store. It looks exactly like Python until the venv fails.
-$version = & python -c "import sys; print('%s.%s' % sys.version_info[:2])" 2>$null
+
+function Have-Ghostscript {
+    $onPath = Get-Command gswin64c, gswin32c -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($onPath) { return $onPath.Source }
+    # Its installer does not add itself to PATH, so a perfectly good install is
+    # invisible to Get-Command. The agent looks here too, for the same reason.
+    $found = Get-ChildItem "$env:ProgramFiles\gs", "${env:ProgramFiles(x86)}\gs" `
+        -Filter gswin*c.exe -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if ($found) { return $found.FullName }
+    return $null
+}
+
+Write-Host "==> Checking what is installed"
+Sync-Path
+
+$winget = Get-Command winget -ErrorAction SilentlyContinue
+
+$version = Have-Python
 if (-not $version) {
-    Need "a working Python" "`python` on PATH is the Microsoft Store stub. Install Python 3.11+ from python.org."
-    exit 1
-}
-if ([version]$version -lt [version]"3.11") {
-    Need "Python 3.11+" "Found $version. Install a newer one from python.org."
-    exit 1
+    if (-not $winget) {
+        Need "Python 3.11+" "winget is not on this machine. Install Python from python.org, ticking 'Add python.exe to PATH'."
+        exit 1
+    }
+    Write-Host "    installing Python (this takes a few minutes)"
+    # --scope machine so the service account can see it: this runs as SYSTEM,
+    # and a per-user Python is invisible to it.
+    & winget install --id Python.Python.3.12 --scope machine --silent `
+        --accept-package-agreements --accept-source-agreements | Out-Null
+    Sync-Path
+    $version = Have-Python
+    if (-not $version) {
+        Need "Python 3.11+" "winget ran but Python is still not usable. Install it from python.org, ticking 'Add python.exe to PATH', then run this again."
+        exit 1
+    }
 }
 
 # Printing goes through Ghostscript. It takes every option -- colour, duplex,
 # copies, page range -- which the Windows print verb does not.
-$gs = Get-Command gswin64c, gswin32c -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $gs) {
-    Need "Ghostscript" "Install it from ghostscript.com/releases, then reopen PowerShell."
-    exit 1
+$gsPath = Have-Ghostscript
+if (-not $gsPath) {
+    if (-not $winget) {
+        Need "Ghostscript" "winget is not on this machine. Install it from ghostscript.com/releases, then run this again."
+        exit 1
+    }
+    Write-Host "    installing Ghostscript"
+    & winget install --id ArtifexSoftware.GhostScript --scope machine --silent `
+        --accept-package-agreements --accept-source-agreements | Out-Null
+    Sync-Path
+    $gsPath = Have-Ghostscript
+    if (-not $gsPath) {
+        Need "Ghostscript" "winget ran but Ghostscript is still not there. Install it from ghostscript.com/releases, then run this again."
+        exit 1
+    }
 }
-Write-Host "    python $version, $($gs.Name)"
+
+Write-Host "    python $version, $(Split-Path $gsPath -Leaf)"
 
 Write-Host "==> Installing the agent"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
