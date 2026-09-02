@@ -9,7 +9,12 @@
 param(
     [Parameter(Mandatory = $true)][string]$Code,
     [string]$Api = "https://api.printvendo.com",
-    [string]$Printer = ""
+    [string]$Printer = "",
+    # A xerox counter runs several machines off one agent. Repeatable, and the
+    # order is the order they are preferred in when both are idle.
+    #   -Bw 'Mono-1','Mono-2' -Colour 'Colour-1'
+    [string[]]$Bw = @(),
+    [string[]]$Colour = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -114,13 +119,16 @@ if ($Printer -and ($visible -notcontains $Printer)) {
 if (-not $Printer -and $visible.Count -gt 1) {
     # Guessing between two printers means somebody's dissertation on the label
     # machine.
-    Write-Host "  This machine has more than one printer. Run again with -Printer '<name>'." -ForegroundColor Yellow
+    Write-Host "  This machine has more than one printer. Run again with -Printer '<name>'," -ForegroundColor Yellow
+    Write-Host "  or split them: -Bw 'Mono-1','Mono-2' -Colour 'Colour-1'"
     exit 1
 }
 
 Write-Host "==> Enrolling this machine"
 $enrol = @("enrol", "--code", $Code, "--api", $Api)
 if ($Printer) { $enrol += @("--printer", $Printer) }
+foreach ($name in $Bw) { $enrol += @("--bw", $name) }
+foreach ($name in $Colour) { $enrol += @("--colour", $name) }
 & $exe @enrol
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -135,6 +143,14 @@ $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New
 
 Register-ScheduledTask -TaskName "PrintvendoAgent" -Action $action -Trigger $trigger `
     -Settings $settings -User "SYSTEM" -RunLevel Highest -Force | Out-Null
+
+# Stop before start, because Start-ScheduledTask does nothing to a task that is
+# already running -- and enrolling above has just rotated this kiosk's token, so
+# an already-running agent is holding one the server invalidated a moment ago.
+# It would go on polling with it and get 401 on every call for ever, while
+# `check` below reads the *file*, finds the new token, and reports the kiosk
+# healthy. That is exactly how two shops stopped printing on the Pi side.
+Stop-ScheduledTask -TaskName "PrintvendoAgent" -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName "PrintvendoAgent"
 
 Write-Host "==> Checking it end to end"
