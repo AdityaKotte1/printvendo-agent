@@ -16,15 +16,18 @@ import platform
 import socket
 import sys
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx
 
+from agent import display_server
+from agent import status as shop_status
 from agent.api import Backend, enrol
 from agent.config import Config, config_path, default_printer, printers, ssh_host
 from agent.pools import pick, pool_for
 from agent.printing import IS_WINDOWS, ghostscript_path
-from agent.runner import run_once
+from agent.runner import PrinterHealth, run_once
 from agent.single import AlreadyRunning, only_one_agent
 from agent.waiting import queue_depth
 
@@ -34,7 +37,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -289,6 +292,32 @@ def _loop(config: Config, *, once: bool = False) -> int:
 
     backend = Backend(config.api_url, config.token)
 
+    # ── what the screen above the counter is told ──────────────────────────
+    #
+    # Held here because this is the only place that sees all of it: the
+    # heartbeat's answer, whether that answer arrived, and what the printer is
+    # doing. The display server reads this and nothing else -- it has no token
+    # and never reaches the backend.
+    snapshot = shop_status.Snapshot()
+
+    # One health object for the life of the process, not one per pass.
+    # `PrinterHealth` only reports when its answer *changes*, and a fresh one
+    # each pass forgot that it had already said "stuck" -- so a jammed shop
+    # raised and stood down the same alert every fifteen seconds. It also makes
+    # "can this shop print" answerable for the screen.
+    health = PrinterHealth()
+
+    def note(**fields) -> None:
+        nonlocal snapshot
+        snapshot = replace(
+            snapshot, updated_at=datetime.now(UTC), printer_ok=not health.stuck, **fields
+        )
+
+    def on_job(state: str | None, sheets: int | None = None) -> None:
+        note(job=shop_status.Job(state=state, sheets=sheets) if state else None)
+
+    display_server.serve(lambda: shop_status.document(snapshot))
+
     def choose(task) -> str | None:
         """Which machine this job goes to, asked once per job.
 
@@ -313,13 +342,26 @@ def _loop(config: Config, *, once: bool = False) -> int:
         now = time.monotonic()
         if now - last_heartbeat >= HEARTBEAT_SECONDS:
             try:
-                backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
+                answer = backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
                 last_heartbeat = now
+                # Was fetched every sixty seconds and discarded. It is most of
+                # what the shop screen shows.
+                note(
+                    connected=True,
+                    kiosk_name=(answer or {}).get("kiosk_name"),
+                    sheets_remaining=(answer or {}).get("sheets_remaining"),
+                    paper_capacity=(answer or {}).get("paper_capacity"),
+                    queue_depth=(answer or {}).get("queue_depth"),
+                )
             except Exception as exc:  # noqa: BLE001
                 # Not fatal. A missed heartbeat makes the kiosk look offline to
                 # an operator; refusing to print over it would make it actually
                 # offline.
                 log.warning("heartbeat failed: %s", exc)
+                # The figures stay; only their freshness changes. A shop that
+                # has been printing all day and lost its line for a minute
+                # should show its real paper count, greyed -- not a blank.
+                note(connected=False)
 
         def beat(backend: Backend = backend) -> None:
             """Called while the printer works, so a long job does not make this
@@ -336,11 +378,20 @@ def _loop(config: Config, *, once: bool = False) -> int:
             try:
                 backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
                 last_heartbeat = time.monotonic()
+                note(connected=True)
             except Exception as exc:  # noqa: BLE001
                 log.warning("heartbeat failed: %s", exc)
+                note(connected=False)
 
         try:
-            run_once(backend, printer=config.printer, choose=choose, on_tick=beat)
+            run_once(
+                backend,
+                printer=config.printer,
+                choose=choose,
+                on_tick=beat,
+                health=health,
+                on_job=on_job,
+            )
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the loop
             log.error("this pass failed: %s", exc)
             if _token_was_rejected(exc):

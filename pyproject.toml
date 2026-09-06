@@ -1,6 +1,6 @@
 [project]
 name = "printvendo-agent"
-version = "1.6.0"
+version = "1.7.0"
 description = "The Printvendo device agent: one agent, Raspberry Pi and Windows."
 requires-python = ">=3.11"
 dependencies = [
@@ -18,13 +18,24 @@ dev = ["pytest>=8.0", "ruff>=0.8"]
 
 [project.scripts]
 printvendo-agent = "agent.__main__:main"
+# The shop screen's lock. A console-script entry point *is* the .exe the
+# operator runs -- `venv\Scripts\printvendo-display.exe` -- so there is no
+# PyInstaller step, no second build, and no frozen copy of the agent that can
+# drift from the installed one.
+printvendo-display = "display.guard:main"
 
 [build-system]
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent*"]
+include = ["agent*", "display*"]
+
+[tool.setuptools.package-data]
+# The page the shop screen shows, and its display face. Data rather than code,
+# and it has to travel with the install: the server resolves it relative to the
+# package, so a wheel without it serves a 404 above a counter.
+display = ["page/*.html", "page/*.css", "page/*.js", "page/*.woff2"]
 
 [tool.ruff]
 line-length = 100

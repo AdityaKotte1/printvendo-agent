@@ -260,3 +260,42 @@ def test_no_tailscale_means_no_host_rather_than_a_hostname(monkeypatch):
     monkeypatch.setattr(subprocess, "run", missing)
 
     assert config_module.ssh_host() is None
+
+
+# ── the answer, which used to be thrown away ────────────────────────────────
+
+
+def test_a_heartbeat_returns_what_the_shop_screen_needs():
+    """The response carries the shop's name, its paper and its queue. It was
+    fetched every sixty seconds and discarded, so the display would otherwise
+    have needed a credential of its own to learn what this already knows."""
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "kiosk_id": "ksk_1",
+                    "kiosk_name": "SRK Xerox",
+                    "queue_depth": 2,
+                    "sheets_remaining": 90,
+                    "paper_capacity": 250,
+                },
+            )
+        )
+    )
+
+    answer = _backend(client).heartbeat(agent_version="1.6.0")
+
+    assert answer["kiosk_name"] == "SRK Xerox"
+    assert answer["sheets_remaining"] == 90
+    assert answer["paper_capacity"] == 250
+
+
+def test_a_heartbeat_with_no_body_is_still_a_heartbeat():
+    """A server that answers 204, or an older one. The machine is alive either
+    way, and a display with nothing to show is not a reason to stop printing."""
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(204))
+    )
+
+    assert _backend(client).heartbeat(agent_version="1.6.0") == {}

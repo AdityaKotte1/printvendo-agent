@@ -53,6 +53,7 @@ def run_once(
     max_per_pass: int = MAX_PER_PASS,
     on_tick: Callable[[], None] | None = None,
     health: "PrinterHealth | None" = None,
+    on_job: "Callable[[str | None, int | None], None] | None" = None,
 ) -> int:
     """Drain the queue for this device. Returns how many tasks were handled.
 
@@ -97,6 +98,7 @@ def run_once(
             printer_fn=printer_fn,
             on_tick=on_tick,
             health=health,
+            on_job=on_job,
         )
 
     log.info("stopping this pass at %s tasks; more are waiting", handled)
@@ -164,8 +166,24 @@ def _do_one(
     printer_fn: PrinterFn,
     on_tick: Callable[[], None] | None = None,
     health: "PrinterHealth | None" = None,
+    on_job: "Callable[[str | None, int | None], None] | None" = None,
 ) -> None:
-    """One task, from file to report. Never raises: the next student is waiting."""
+    """One task, from file to report. Never raises: the next student is waiting.
+
+    `on_job` is the shop screen: a state and a sheet count, never a filename.
+    Called with (None, None) when this task is done, so a screen cannot be left
+    saying "printing" about a job that finished ten minutes ago.
+    """
+
+    def announce_job(state: str | None, sheets: int | None = None) -> None:
+        if on_job is None:
+            return
+        try:
+            on_job(state, sheets)
+        except Exception:  # noqa: BLE001 - a screen must not stop a print
+            log.warning("could not update the shop display", exc_info=True)
+
+    announce_job("Fetching", task.expected_sheets)
     with _scratch(workspace) as folder:
         path: Path | None = None
         try:
@@ -173,6 +191,7 @@ def _do_one(
         except Exception as exc:  # noqa: BLE001 - reported, not swallowed
             log.error("could not fetch %s: %s", task.task_id, exc)
             _report(backend, task.task_id, "failed")
+            announce_job(None)
             return
 
         def announce(state: JobState) -> None:
@@ -186,6 +205,7 @@ def _do_one(
             """
             if state is JobState.PRINTING:
                 _report(backend, task.task_id, "printing")
+                announce_job("Printing", task.expected_sheets)
 
         try:
             # `on_tick` is the heartbeat, called while the printer works. A
@@ -205,10 +225,12 @@ def _do_one(
             _report(backend, task.task_id, "failed")
             if health is not None:
                 health.jammed(backend, str(exc))
+            announce_job(None)
             return
         except Exception as exc:  # noqa: BLE001
             log.error("printing %s failed: %s", task.task_id, exc)
             _report(backend, task.task_id, "failed")
+            announce_job(None)
             return
 
         # The server's own figure. The agent does not recompute how much paper
@@ -222,6 +244,8 @@ def _do_one(
         # rather than the agent.
         if health is not None:
             health.cleared(backend)
+
+        announce_job(None)
 
 
 def _report(backend, task_id: str, state: str, *, sheets_used: int | None = None) -> None:

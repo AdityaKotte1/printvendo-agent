@@ -35,13 +35,21 @@ class Backend:
     def _headers(self) -> dict[str, str]:
         return {"X-Device-Token": self.token}
 
-    def heartbeat(self, *, agent_version: str, ssh_host: str | None = None) -> None:
-        """Say the machine is alive.
+    def heartbeat(
+        self, *, agent_version: str, ssh_host: str | None = None
+    ) -> dict:
+        """Say the machine is alive, and hear back what this shop looks like.
 
         Whether a device is *online* is derived from this on the server, never
         from a status column: a Pi whose power was pulled cannot send "I am
         going offline", which is why the old backend's status stayed ONLINE
         until somebody noticed.
+
+        **The answer used to be discarded.** It carries the shop's name, its
+        paper count and capacity, and how much is queued -- everything the
+        screen above the counter shows -- so throwing it away meant the display
+        would have needed a credential and a second route to learn what this
+        call already returns every sixty seconds.
         """
         body: dict = {"agent_version": agent_version}
         # Only when there is one. A kiosk with no tailnet has no answer, and
@@ -55,6 +63,12 @@ class Backend:
             json=body,
         )
         response.raise_for_status()
+        # An older server, or one that answers 204, leaves nothing to read.
+        # Returning {} rather than raising keeps a heartbeat a heartbeat.
+        try:
+            return response.json() or {}
+        except ValueError:
+            return {}
 
     def next_task(self) -> dict | None:
         """Claim one task, or find out there is none."""

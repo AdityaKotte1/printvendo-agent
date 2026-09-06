@@ -14,7 +14,11 @@ param(
     # order is the order they are preferred in when both are idle.
     #   -Bw 'Mono-1','Mono-2' -Colour 'Colour-1'
     [string[]]$Bw = @(),
-    [string[]]$Colour = @()
+    [string[]]$Colour = @(),
+    # The shop screen. Passing a PIN sets one up: a desktop shortcut that opens
+    # the locked display, and the PIN that leaves it. Without this nothing about
+    # the screen is installed and the kiosk prints exactly as before.
+    [string]$Pin = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -297,6 +301,45 @@ $ready.Lines | ForEach-Object { Write-Host "    $_" }
 if ($ready.Code -ne 0) {
     Write-Host "The kiosk is not ready. Fix the above and run: `"$exe`" check" -ForegroundColor Yellow
     exit 1
+}
+
+# ── the screen above the counter ───────────────────────────────────────────
+#
+# Optional, and last: a shop with no second monitor is a working kiosk, and
+# nothing here may be able to stop one printing.
+if ($Pin) {
+    Write-Host "==> Setting up the shop screen"
+
+    $display = "$root\venv\Scripts\printvendo-display.exe"
+    if (-not (Test-Path $display)) {
+        Need "the display" "the agent installed but printvendo-display.exe is missing. Re-run this installer."
+    }
+    else {
+        & $display --set-pin $Pin | Out-Null
+
+        # A shortcut rather than a startup entry, deliberately. A display that
+        # launched itself at boot on a PC with one monitor would cover the
+        # shop's own desktop, and the person who needs it gone is the person
+        # who has just lost their screen.
+        $link = Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "Printvendo screen.lnk"
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($link)
+        $shortcut.TargetPath = $display
+        $shortcut.WorkingDirectory = $root
+        $shortcut.Description = "The locked shop screen. Ctrl+Alt+U and the PIN to leave it."
+        $shortcut.Save()
+
+        # Closes the useful half of the Ctrl+Alt+Del door. The other half --
+        # Ctrl+Alt+Del itself -- is reserved by Windows and cannot be blocked
+        # from user space by anything, which is stated here rather than
+        # discovered at a counter.
+        $policy = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+        New-Item -Path $policy -Force | Out-Null
+        Set-ItemProperty -Path $policy -Name DisableTaskMgr -Value 1 -Type DWord
+
+        Write-Host "    shortcut on the desktop: Printvendo screen"
+        Write-Host "    Ctrl+Alt+U and the PIN leaves it"
+    }
 }
 
 Write-Host ""

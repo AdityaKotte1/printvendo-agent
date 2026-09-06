@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Printvendo</title>
+<!--
+  The screen above a shop counter. Two halves: the left teaches, the right
+  reports.
+
+  Everything is local. The only thing this page fetches is /status from the
+  agent on this same machine, which is why the policy below allows 'self' and
+  nothing else -- no CDN, no font host, no analytics. A shop screen that phoned
+  anywhere would be a shop screen that could be made to show something else.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self';
+               script-src 'self'; style-src 'self'; font-src 'self';
+               img-src 'self' data:; object-src 'none'; base-uri 'none';
+               form-action 'none'">
+<!--
+  Inline, so the browser stops asking for one. A 404 a second on a shop PC is
+  noise in a log somebody may one day have to read.
+-->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0a0a'/%3E%3Crect x='6' y='7' width='20' height='18' fill='%23f2f2ef'/%3E%3Crect x='6' y='7' width='5' height='18' fill='%23ff6b47'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── left: what to do ────────────────────────────────────────────────── -->
+<section class="teach" aria-label="How to print here">
+  <header class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="wordmark">Printvendo</span>
+  </header>
+
+  <p class="lede">Print from your phone.<br>No cable, no queue.</p>
+
+  <ol class="steps" id="steps">
+    <li class="step" data-step="1">
+      <span class="num">01</span>
+      <div>
+        <h2>Open the app</h2>
+        <p>Scan the code on the counter, or go to <b>printvendo.com</b>.</p>
+      </div>
+    </li>
+    <li class="step" data-step="2">
+      <span class="num">02</span>
+      <div>
+        <h2>Choose your files</h2>
+        <p>PDFs or photos. Pick colour, both sides, how many copies.</p>
+      </div>
+    </li>
+    <li class="step" data-step="3">
+      <span class="num">03</span>
+      <div>
+        <h2>Pay</h2>
+        <p>UPI or card. You see the price before you pay it.</p>
+      </div>
+    </li>
+    <li class="step" data-step="4">
+      <span class="num">04</span>
+      <div>
+        <h2>Collect</h2>
+        <p>It prints here. Watch this screen for yours.</p>
+      </div>
+    </li>
+  </ol>
+
+  <div class="rule" aria-hidden="true"><span id="rule-fill"></span></div>
+</section>
+
+<!-- ── right: this shop, right now ─────────────────────────────────────── -->
+<section class="state" aria-label="This shop right now" aria-live="polite">
+  <p class="shopname" id="shopname">This shop</p>
+
+  <div class="stamp" id="stamp" data-tone="unknown">
+    <span id="stamp-word">Starting</span>
+  </div>
+  <p class="stamp-why" id="stamp-why">Waking up…</p>
+
+  <div class="block" id="paper-block" hidden>
+    <p class="blabel">Paper</p>
+    <div class="bar"><span class="bar-fill" id="paper-fill"></span></div>
+    <p class="bnum"><b id="paper-left">—</b> <span id="paper-of"></span></p>
+  </div>
+
+  <div class="block" id="job-block" hidden>
+    <p class="blabel">Printing now</p>
+    <p class="bnum"><b id="job-sheets">—</b> <span id="job-of">sheets</span></p>
+    <div class="dots" id="job-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+  </div>
+
+  <div class="block" id="queue-block" hidden>
+    <p class="blabel">Waiting</p>
+    <p class="bnum"><b id="queue-n">0</b> jobs</p>
+  </div>
+
+  <p class="asof" id="asof"></p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

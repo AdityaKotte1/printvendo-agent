@@ -1,0 +1,338 @@
+/* ============================================================
+   THE SCREEN ABOVE THE COUNTER
+   Printvendo ink system: riso spot inks on toner black.
+
+   The tokens are the student app's, copied rather than imported
+   because this page is served by the agent on a shop PC and has
+   no build step and no network. They are the same values; if the
+   app's palette changes, this file changes with it.
+
+   Read from two to four metres away, standing up, often at an
+   angle. So: everything is bigger than a phone would need,
+   nothing is thinner than 2px, and no text is grey-on-grey.
+   ============================================================ */
+
+@font-face {
+  font-family: "Anton";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("anton-latin.woff2") format("woff2");
+}
+
+:root {
+  --ink: #0a0a0a;
+  --ink-lift: #141416;
+  --paper: #f2f2ef;
+  --paper-2: #dededa;
+  --orange: #ff6b47;
+  --orange-ink: #0b0b0c;
+  --green: #00a95c;
+  --yellow: #ffe800;
+  --red: #ff4d6d;
+  --toner: #8e8e8a;
+
+  --hair: rgba(242, 242, 239, 0.22);
+  --hair-soft: rgba(242, 242, 239, 0.11);
+
+  --display: "Anton", "Roboto Condensed", Impact, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --type: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --halftone: radial-gradient(circle, rgba(242, 242, 239, 0.03) 1px, transparent 1.6px);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+  /* The teaching half is wider: it carries four steps of prose, and the state
+     half carries four numbers. Equal halves would leave one crowded and one
+     empty. */
+  grid-template-columns: 58fr 42fr;
+  background-color: var(--ink);
+  background-image: var(--halftone);
+  background-size: 8px 8px;
+  color: var(--paper);
+  font-family: var(--body);
+  /* Everything scales with the screen rather than sitting at a phone's sizes
+     on a forty-inch panel. */
+  font-size: clamp(16px, 1.15vw, 30px);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  cursor: none; /* nothing here is clickable; a pointer invites poking */
+  user-select: none;
+}
+
+/* ── left: what to do ──────────────────────────────────────── */
+
+.teach {
+  padding: 4vh 3vw;
+  display: flex;
+  flex-direction: column;
+  gap: 2.4vh;
+  border-right: 3px solid var(--hair);
+  min-width: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+}
+
+.mark {
+  width: 1.5em;
+  height: 1.5em;
+  background: var(--paper);
+  border-left: 0.42em solid var(--orange);
+  flex: none;
+}
+
+.wordmark {
+  font-family: var(--display);
+  font-size: 2.1em;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.lede {
+  font-family: var(--display);
+  font-size: clamp(2.2em, 4.4vw, 4.4em);
+  line-height: 1.02;
+  text-transform: uppercase;
+  letter-spacing: 0.005em;
+  margin: 0.2em 0 0;
+  text-wrap: balance;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.6vh;
+  flex: 1;
+  justify-content: center;
+  min-height: 0;
+}
+
+/* A step at rest is legible but quiet; the lit one is the only orange on this
+   half, so the eye lands on it from across the room. */
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 1em;
+  padding: 0.9em 1em;
+  border-left: 4px solid var(--hair-soft);
+  opacity: 0.44;
+  transition: opacity 420ms ease, border-color 420ms ease, background 420ms ease;
+}
+
+.step.on {
+  opacity: 1;
+  border-left-color: var(--orange);
+  background: rgba(255, 107, 71, 0.09);
+}
+
+.num {
+  font-family: var(--type);
+  font-size: 1.05em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--toner);
+  flex: none;
+  padding-top: 0.25em;
+}
+
+.step.on .num { color: var(--orange); }
+
+.step h2 {
+  font-family: var(--display);
+  font-size: 1.85em;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 1.05;
+  margin: 0 0 0.15em;
+}
+
+.step p {
+  margin: 0;
+  font-size: 1.05em;
+  color: var(--paper-2);
+}
+
+.step.on p { color: var(--paper); }
+
+/* The loop's own progress. Not a decoration -- it is what tells somebody who
+   glanced up that the screen is live rather than frozen on step three. */
+.rule {
+  height: 4px;
+  background: var(--hair-soft);
+  flex: none;
+}
+
+.rule span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--orange);
+}
+
+/* ── right: this shop ──────────────────────────────────────── */
+
+.state {
+  padding: 4vh 2.6vw;
+  display: flex;
+  flex-direction: column;
+  gap: 2.2vh;
+  background: var(--ink-lift);
+  min-width: 0;
+}
+
+.shopname {
+  font-family: var(--type);
+  font-size: 0.95em;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--toner);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The one thing readable from the far end of the room. */
+.stamp {
+  font-family: var(--display);
+  font-size: clamp(2.6em, 5.2vw, 5.4em);
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  padding: 0.32em 0.4em;
+  border: 5px solid currentColor;
+  text-align: center;
+}
+
+.stamp[data-tone="ok"]      { color: var(--green); }
+.stamp[data-tone="bad"]     { color: var(--red); }
+.stamp[data-tone="busy"]    { color: var(--orange); }
+.stamp[data-tone="unknown"] { color: var(--toner); }
+
+.stamp-why {
+  margin: 0;
+  font-size: 1.05em;
+  color: var(--paper-2);
+  text-wrap: balance;
+}
+
+.block {
+  border-top: 2px solid var(--hair-soft);
+  padding-top: 1.6vh;
+}
+
+.blabel {
+  font-family: var(--type);
+  font-size: 0.82em;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--toner);
+  margin: 0 0 0.5em;
+}
+
+.bar {
+  height: 1.5em;
+  background: var(--ink);
+  border: 2px solid var(--hair);
+  overflow: hidden;
+}
+
+.bar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--orange);
+  transition: width 600ms ease;
+}
+
+/* Low paper is a different colour, not a smaller bar. A shopkeeper glancing up
+   should not have to judge a length. */
+.bar-fill.low { background: var(--yellow); }
+.bar-fill.out { background: var(--red); }
+
+.bnum {
+  margin: 0.5em 0 0;
+  font-size: 1.15em;
+  color: var(--paper-2);
+}
+
+.bnum b {
+  font-family: var(--display);
+  font-size: 1.7em;
+  font-weight: 400;
+  color: var(--paper);
+  vertical-align: -0.06em;
+  margin-right: 0.2em;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 0.4em;
+  margin-top: 0.6em;
+}
+
+.dots span {
+  width: 0.55em;
+  height: 0.55em;
+  background: var(--orange);
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.dots span:nth-child(2) { animation-delay: 0.2s; }
+.dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+.asof {
+  margin: auto 0 0;
+  font-family: var(--type);
+  font-size: 0.82em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--toner);
+}
+
+/* Figures we can no longer confirm. Dimmed rather than hidden: a shop that has
+   been printing all day and lost its line for a minute should show its real
+   paper count, not a blank -- but it must not look live. */
+body.stale .block,
+body.stale .stamp-why {
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* A screen turned portrait, or a small one. The split becomes top and bottom
+   rather than shrinking two columns into unreadable strips. */
+@media (max-aspect-ratio: 1/1) {
+  body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  .teach { border-right: none; border-bottom: 3px solid var(--hair); }
+  .state { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 1.4vh 2vw; }
+  .asof { margin: 0; }
+}
