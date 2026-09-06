@@ -45,6 +45,11 @@ class Snapshot:
     printer_ok: bool = True
     job: Job | None = None
     updated_at: datetime | None = None
+    # Which build is serving this. The page watches it: `update_agent` from the
+    # admin console replaces the display's code and its page along with the
+    # agent, because they ship in one wheel -- but the browser already has the
+    # old page and will happily show it until somebody drives to the shop.
+    agent_version: str | None = None
 
 
 def document(snapshot: Snapshot, *, now: datetime | None = None) -> dict:
@@ -84,6 +89,9 @@ def document(snapshot: Snapshot, *, now: datetime | None = None) -> dict:
         "job": {"state": snapshot.job.state, "sheets": snapshot.job.sheets}
         if snapshot.job is not None
         else None,
+        # Which build served this. The page reloads itself when it changes, so
+        # "Update the agent" in the console reaches the screen too.
+        "agent_version": snapshot.agent_version,
         # How old the figures are, so the page can say "not connected" without
         # having to keep its own clock or guess how long a poll has been failing.
         "as_of": snapshot.updated_at.isoformat() if snapshot.updated_at else None,

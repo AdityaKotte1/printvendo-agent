@@ -121,3 +121,24 @@ def test_the_document_carries_no_filename_anywhere():
     assert "filename" not in flat
     assert ".pdf" not in flat
     assert "document_id" not in flat
+
+
+# ── reaching the screen with a release ──────────────────────────────────────
+
+
+def test_the_document_says_which_build_served_it():
+    """`update_agent` from the console replaces the display's page along with
+    the agent -- they ship in one wheel. But Edge is already holding the old
+    page, and nobody is driving to the shop to press F5, so the page watches
+    this and reloads itself when it changes."""
+    doc = document(Snapshot(agent_version="1.7.0"), now=NOW)
+
+    assert doc["agent_version"] == "1.7.0"
+
+
+def test_a_version_that_is_not_known_is_absent_rather_than_guessed():
+    """A page told "unknown" once and "1.7.0" next would reload for no reason,
+    on a screen above a counter, in front of a student."""
+    doc = document(Snapshot(), now=NOW)
+
+    assert doc["agent_version"] is None

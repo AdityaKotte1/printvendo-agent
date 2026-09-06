@@ -34,7 +34,55 @@
     <span class="wordmark">Printvendo</span>
   </header>
 
-  <p class="lede">Print from your phone.<br>No cable, no queue.</p>
+  <div class="hero">
+    <!--
+      A sheet of paper with a face. The right character for a print shop, and
+      drawn rather than photographed so it is one file, no colour management
+      and no licence.
+
+      Everything that moves is a transform on a group -- no width, height or
+      position is animated -- so the whole thing composites and a shop PC that
+      is also rendering a PDF does not drop the loop.
+
+      `data-mood` is set from the shop's real state, so the face is reporting
+      rather than decorating: it dozes when the shop is offline.
+    -->
+    <svg class="mate" id="mate" viewBox="0 0 210 250" data-mood="ready"
+         role="img" aria-label="A friendly sheet of paper">
+      <!-- the sheet, with a folded corner -->
+      <path class="sheet"
+            d="M18 14 h136 l38 38 v184 a6 6 0 0 1 -6 6 H24 a6 6 0 0 1 -6 -6 V20 a6 6 0 0 1 6 -6 z"/>
+      <path class="fold" d="M154 14 l38 38 h-38 z"/>
+      <rect class="band" x="18" y="14" width="136" height="26"/>
+
+      <g class="eyes">
+        <g class="eye">
+          <ellipse class="white" cx="76" cy="118" rx="21" ry="23"/>
+          <circle class="pupil" cx="76" cy="118" r="9"/>
+        </g>
+        <g class="eye">
+          <ellipse class="white" cx="134" cy="118" rx="21" ry="23"/>
+          <circle class="pupil" cx="134" cy="118" r="9"/>
+        </g>
+      </g>
+
+      <!-- Two mouths, one shown at a time. A single path morphing between a
+           smile and an O needs SMIL or a library; swapping opacity needs
+           neither and reads identically at four metres. -->
+      <g class="mouth">
+        <path class="smile" d="M74 168 q31 30 62 0"/>
+        <ellipse class="open" cx="105" cy="176" rx="20" ry="16"/>
+      </g>
+
+      <!-- Asleep. Two lines, only drawn when the shop is offline. -->
+      <g class="lids">
+        <path d="M55 118 h42"/>
+        <path d="M113 118 h42"/>
+      </g>
+    </svg>
+
+    <p class="lede">Print from your phone.<br>No cable, no queue.</p>
+  </div>
 
   <ol class="steps" id="steps">
     <li class="step" data-step="1">

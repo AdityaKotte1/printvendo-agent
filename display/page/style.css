@@ -103,13 +103,121 @@ body {
   line-height: 1;
 }
 
+/* The character and the promise, side by side. This is the gap the eye lands
+   in from across a room, so it is the one place on the screen that moves for
+   its own sake. */
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 2.4vw;
+  margin: 1vh 0;
+}
+
+.mate {
+  width: clamp(110px, 11vw, 230px);
+  height: auto;
+  flex: none;
+  overflow: visible;
+}
+
+.mate .sheet { fill: var(--paper); }
+.mate .fold { fill: var(--paper-2); }
+.mate .band { fill: var(--orange); }
+.mate .white { fill: var(--ink); }
+.mate .pupil { fill: var(--paper); }
+
+.mate .smile {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.mate .open { fill: var(--ink); }
+
+.mate .lids {
+  stroke: var(--ink);
+  stroke-width: 9;
+  stroke-linecap: round;
+  opacity: 0;
+}
+
+/* Blinking. The lid is only down for a moment in a long cycle, which is what
+   makes it read as blinking rather than as flashing. Both eyes together --
+   they are eyes, not indicator lights. */
+.mate .eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: blink 5.4s infinite;
+}
+
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.06); }
+}
+
+/* Looking down the list as the loop moves through it. Set from the script as
+   a custom property, so the face follows the step somebody is reading. */
+.mate .pupil {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: translate(calc(var(--look-x, 0) * 1px), calc(var(--look-y, 0) * 1px));
+  transition: transform 500ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* Resting face: a smile. */
+.mate .open { opacity: 0; }
+.mate .smile { opacity: 1; }
+
+/* Talking, for a couple of seconds each time the step changes. Not for ever:
+   a mouth that never stops is a mouth nobody looks at. */
+.mate.talking .mouth {
+  animation: talk 260ms steps(1, end) 8;
+}
+
+@keyframes talk {
+  0%, 49% { }
+  50%, 100% { }
+}
+
+.mate.talking .open { animation: mouth-open 260ms steps(1, end) 8; }
+.mate.talking .smile { animation: mouth-shut 260ms steps(1, end) 8; }
+
+@keyframes mouth-open {
+  0%, 49% { opacity: 0; }
+  50%, 100% { opacity: 1; }
+}
+
+@keyframes mouth-shut {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* A shop that cannot print is a shop the character is not cheerful about.
+   Asleep rather than sad: it is waiting, not broken-hearted, and a sad face
+   above a counter is a worse advertisement than a dozing one. */
+.mate[data-mood="offline"] .eyes { animation: none; opacity: 0; }
+.mate[data-mood="offline"] .lids { opacity: 1; }
+.mate[data-mood="offline"] .smile { d: path("M78 176 h54"); }
+.mate[data-mood="offline"] .band { fill: var(--toner); }
+
+/* Working. A wider grin, and the sheet nods along. */
+.mate[data-mood="printing"] {
+  animation: nod 1.6s ease-in-out infinite;
+}
+
+@keyframes nod {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-2%) rotate(-1.4deg); }
+}
+
 .lede {
   font-family: var(--display);
   font-size: clamp(2.2em, 4.4vw, 4.4em);
   line-height: 1.02;
   text-transform: uppercase;
   letter-spacing: 0.005em;
-  margin: 0.2em 0 0;
+  margin: 0;
   text-wrap: balance;
 }
 
@@ -326,6 +434,13 @@ body.stale .stamp-why {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+
+  /* The blink keyframe ends mid-blink when it is cut to nothing, which would
+     leave the eyes shut. Opened explicitly: a still face is fine, a face with
+     its eyes squeezed closed is not. */
+  .mate .eyes { transform: scaleY(1) !important; }
+  .mate .open { opacity: 0 !important; }
+  .mate .smile { opacity: 1 !important; }
 }
 
 /* A screen turned portrait, or a small one. The split becomes top and bottom

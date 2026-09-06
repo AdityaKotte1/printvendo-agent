@@ -29,9 +29,33 @@ function light(index) {
   ruleFill.style.width = `${((index + 1) / steps.length) * 100}%`;
 }
 
+const mate = document.getElementById('mate');
+
+/**
+ * The face follows the step being read, and says it.
+ *
+ * Both are small, and both are the difference between a poster and something
+ * that looks like it is talking to you -- which is the whole reason the left
+ * half exists.
+ */
+function react(index) {
+  // Eyes down the list. A few pixels is plenty; more and it looks possessed.
+  const spread = (index / Math.max(1, steps.length - 1)) - 0.5;
+  mate.style.setProperty('--look-y', String(3 + spread * 5));
+  mate.style.setProperty('--look-x', String(spread * 4));
+
+  // Restarting a CSS animation needs the class off, a reflow, and the class
+  // on -- without the reflow the browser coalesces both changes and nothing
+  // replays.
+  mate.classList.remove('talking');
+  void mate.offsetWidth;
+  mate.classList.add('talking');
+}
+
 function advance() {
   current = (current + 1) % steps.length;
   light(current);
+  react(current);
 }
 
 advance();
@@ -65,6 +89,21 @@ const asOf = el('asof');
 
 let lastGood = 0;
 
+// The build this page was served by. `update_agent` from the admin console
+// replaces the page on disk, but Edge is already holding the old one -- and
+// nobody is going to drive to the shop to press F5. So the screen watches the
+// version and reloads itself once, when it changes.
+let servedBy = null;
+
+function reloadIfReplaced(version) {
+  if (!version) return;
+  if (servedBy === null) {
+    servedBy = version;
+    return;
+  }
+  if (version !== servedBy) location.reload();
+}
+
 /** The one sentence under the stamp. Says what to do, not what went wrong. */
 function why(status) {
   if (!status) return 'Waking up…';
@@ -79,6 +118,9 @@ function render(status) {
   if (status.kiosk_name) shopName.textContent = status.kiosk_name;
 
   const printing = Boolean(status.job);
+  // The face reports rather than decorates: it dozes when the shop cannot
+  // print, so somebody glancing at the friendly half already knows.
+  mate.dataset.mood = status.online ? (printing ? 'printing' : 'ready') : 'offline';
   const tone = status.online ? (printing ? 'busy' : 'ok') : 'bad';
   stamp.dataset.tone = tone;
   stampWord.textContent = status.online ? (printing ? 'Printing' : 'Ready') : 'Offline';
@@ -121,6 +163,7 @@ function render(status) {
 
 function markStale() {
   document.body.classList.add('stale');
+  mate.dataset.mood = 'offline';
   stamp.dataset.tone = 'unknown';
   stampWord.textContent = 'Offline';
   stampWhy.textContent = 'This screen has lost touch with the machine.';
@@ -135,6 +178,7 @@ async function poll() {
 
     lastGood = Date.now();
     document.body.classList.remove('stale');
+    reloadIfReplaced(status.agent_version);
     render(status);
     asOf.textContent = status.online ? 'Live' : 'Last known';
   } catch {

@@ -298,7 +298,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
     # heartbeat's answer, whether that answer arrived, and what the printer is
     # doing. The display server reads this and nothing else -- it has no token
     # and never reaches the backend.
-    snapshot = shop_status.Snapshot()
+    snapshot = shop_status.Snapshot(agent_version=VERSION)
 
     # One health object for the life of the process, not one per pass.
     # `PrinterHealth` only reports when its answer *changes*, and a fresh one
