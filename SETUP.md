@@ -35,9 +35,17 @@ need:
 
 - On a **Raspberry Pi**, `install-pi.sh` installs python, CUPS and ghostscript
   with apt.
-- On **Windows**, `install-windows.ps1` installs Python 3.12 and Ghostscript
-  with winget, machine-wide, and re-reads PATH itself so there is no "close and
-  reopen PowerShell" step to forget.
+- On **Windows**, `install-windows.ps1` installs Python 3.12 with winget,
+  machine-wide, and Ghostscript straight from Artifex's own releases. It
+  re-reads PATH itself, so there is no "close and reopen PowerShell" step to
+  forget.
+
+  Ghostscript is not on winget and has not been since Artifex's package was
+  dropped from the community repo — `winget install --id
+  ArtifexSoftware.GhostScript` answers "No package found matching input
+  criteria", which is what a kiosk install used to die on. The installer asks
+  GitHub which release is newest and falls back to a pinned one if it cannot
+  reach the API.
 
 This section used to be two pages of downloads, a tick box called "Add
 python.exe to PATH" that the whole thing depended on, and a note that
@@ -55,6 +63,9 @@ stops rather than failing obscurely. Then, by hand:
 - **Ghostscript AGPL**, 64-bit, from <https://ghostscript.com/releases/gsdnld.html>.
   It will not add itself to PATH, and does not need to -- the agent looks under
   `C:\Program Files\gs` as well.
+
+Ghostscript does not need winget either way, so only Python is affected by this
+section.
 
 Run the installer again afterwards.
 

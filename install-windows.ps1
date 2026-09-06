@@ -18,6 +18,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# GitHub refuses anything below TLS 1.2, and Windows PowerShell 5.1 on an
+# older build still negotiates 1.0 by default -- which arrives as a connection
+# error and reads as "this shop has no internet".
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $root = "$env:ProgramFiles\Printvendo"
 $exe = "$root\venv\Scripts\printvendo-agent.exe"
 
@@ -61,6 +65,25 @@ function Invoke-AsSystem($arguments) {
     return @{ Lines = @($lines | Where-Object { $_ -notlike "EXIT:*" }); Code = $code }
 }
 
+# Run a native command whose *failure is an answer*, not an error.
+#
+# Windows PowerShell 5.1 turns a native command's stderr into ErrorRecords the
+# moment it is redirected, and `$ErrorActionPreference = "Stop"` above makes
+# those terminating. So a probe written as `& python -c ... 2>$null` does not
+# return "there is no python" when there is none -- it kills the script.
+#
+# It did. The Microsoft Store's python.exe stub writes "Python was not found"
+# to stderr and exits 9, so this installer died on the very line meant to
+# discover that and install Python -- on a shop PC, with a message pointing at
+# a line of PowerShell rather than at anything an installer could act on.
+# Reproduced on 5.1.22621 before this was written, and again after.
+function Invoke-Native {
+    param([scriptblock]$Command)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Command 2>$null } finally { $ErrorActionPreference = $previous }
+}
+
 # Refresh PATH from the registry, so something installed a moment ago in this
 # same script is visible without reopening PowerShell. A process inherits its
 # environment at start and never hears about a change -- which is why every set
@@ -73,10 +96,15 @@ function Sync-Path {
 }
 
 function Have-Python {
-    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $null }
-    # The Microsoft Store stub sits on PATH as `python` and does nothing but
-    # open the Store. It looks exactly like Python until the venv fails.
-    $v = & python -c "import sys; print('%s.%s' % sys.version_info[:2])" 2>$null
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) { return $null }
+    # Anything under WindowsApps is unusable here, for two separate reasons: it
+    # is either the Microsoft Store's stub, which is not Python at all and does
+    # nothing but open the Store, or a Store install, which is per-user and so
+    # invisible to the SYSTEM account the agent runs as. Neither is worth
+    # probing -- and probing the stub is what used to end this script.
+    if ($python.Source -like "*\WindowsApps\*") { return $null }
+    $v = Invoke-Native { & python -c "import sys; print('%s.%s' % sys.version_info[:2])" }
     if (-not $v) { return $null }
     if ([version]$v -lt [version]"3.11") { return $null }
     return $v
@@ -94,6 +122,48 @@ function Have-Ghostscript {
     return $null
 }
 
+# Ghostscript is not on winget, and has not been since Artifex's package was
+# dropped from the community repo: `winget install --id ArtifexSoftware.GhostScript`
+# answers "No package found matching input criteria" -- on every Windows kiosk,
+# at the step that was meant to be the automatic one. Checked on 2026-09-05;
+# the only thing left under that publisher is ArtifexSoftware.mutool.
+#
+# So it comes from Artifex's own releases. The newest is asked for rather than
+# pinned, because a pinned version is exactly what rotted here before -- and
+# the pin below is only the fallback for a machine that cannot reach the API.
+$GhostscriptFallback = "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10071/gs10071w64.exe"
+
+function Install-Ghostscript {
+    $url = $GhostscriptFallback
+    try {
+        $latest = Invoke-RestMethod -UseBasicParsing `
+            -Uri "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest"
+        $asset = $latest.assets | Where-Object { $_.name -match '^gs\d+w64\.exe$' } | Select-Object -First 1
+        if ($asset) { $url = $asset.browser_download_url }
+    } catch {
+        Write-Host "    (could not ask which is newest; using $(Split-Path $GhostscriptFallback -Leaf))"
+    }
+
+    $setup = Join-Path $env:TEMP "printvendo-ghostscript.exe"
+    # 65 MB. PowerShell 5.1 renders a progress bar per chunk, which costs more
+    # time than the download on a shop connection -- an order of magnitude, and
+    # it is the difference between a minute and a quarter of an hour.
+    $progress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $setup -UseBasicParsing
+    } finally {
+        $ProgressPreference = $progress
+    }
+
+    # NSIS: /S is silent. No /D, deliberately -- the default C:\Program Files\gs
+    # is where Have-Ghostscript looks and where the agent looks, and a custom
+    # directory would have to be taught to both.
+    $run = Start-Process -FilePath $setup -ArgumentList "/S" -Wait -PassThru
+    Remove-Item $setup -ErrorAction SilentlyContinue
+    return $run.ExitCode
+}
+
 Write-Host "==> Checking what is installed"
 Sync-Path
 
@@ -108,8 +178,11 @@ if (-not $version) {
     Write-Host "    installing Python (this takes a few minutes)"
     # --scope machine so the service account can see it: this runs as SYSTEM,
     # and a per-user Python is invisible to it.
-    & winget install --id Python.Python.3.12 --scope machine --silent `
-        --accept-package-agreements --accept-source-agreements | Out-Null
+    # Wrapped for the same reason as the probe above: winget writes notices to
+    # stderr -- a source agreement, a pending upgrade -- and under `Stop` one of
+    # those ends the install rather than being the sentence it is.
+    Invoke-Native { & winget install --id Python.Python.3.12 --scope machine --silent `
+        --accept-package-agreements --accept-source-agreements } | Out-Null
     Sync-Path
     $version = Have-Python
     if (-not $version) {
@@ -122,17 +195,17 @@ if (-not $version) {
 # copies, page range -- which the Windows print verb does not.
 $gsPath = Have-Ghostscript
 if (-not $gsPath) {
-    if (-not $winget) {
-        Need "Ghostscript" "winget is not on this machine. Install it from ghostscript.com/releases, then run this again."
+    Write-Host "    installing Ghostscript (65 MB, a few minutes)"
+    try {
+        $code = Install-Ghostscript
+    } catch {
+        Need "Ghostscript" "could not fetch it: $($_.Exception.Message). Install it by hand from https://ghostscript.com/releases/gsdnld.html, then run this again."
         exit 1
     }
-    Write-Host "    installing Ghostscript"
-    & winget install --id ArtifexSoftware.GhostScript --scope machine --silent `
-        --accept-package-agreements --accept-source-agreements | Out-Null
     Sync-Path
     $gsPath = Have-Ghostscript
     if (-not $gsPath) {
-        Need "Ghostscript" "winget ran but Ghostscript is still not there. Install it from ghostscript.com/releases, then run this again."
+        Need "Ghostscript" "the installer ran (exit $code) but Ghostscript is still not there. Install it by hand from https://ghostscript.com/releases/gsdnld.html, then run this again."
         exit 1
     }
 }
@@ -142,10 +215,25 @@ Write-Host "    python $version, $(Split-Path $gsPath -Leaf)"
 Write-Host "==> Installing the agent"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 & python -m venv "$root\venv"
-& "$root\venv\Scripts\pip.exe" install --quiet --upgrade pip
+# Unchecked, a failed venv arrives two lines later as "pip.exe is not
+# recognised", which reads as a missing file rather than as the thing that was
+# never made.
+if ($LASTEXITCODE -ne 0) {
+    Need "a usable Python" "python -m venv failed. Install Python 3.12 from python.org, ticking 'Add python.exe to PATH', then run this again."
+    exit 1
+}
+# Through the venv's python, never pip.exe: on Windows pip refuses to replace
+# its own running executable and answers "ERROR: To modify pip, please run the
+# following command". Nothing checked that line's exit code, so the install
+# carried on correctly -- while printing ERROR at somebody standing at a shop
+# counter, which is indistinguishable from the install having failed.
+#
+# --disable-pip-version-check for the same reason: a "[notice] A new release of
+# pip is available" is true, irrelevant here, and reads as a problem.
+& "$root\venv\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check --upgrade pip
 # $($PSScriptRoot) in braces: "$PSScriptRoot[windows]" is parsed by PowerShell
 # as an index into the path string, which installs nothing and says nothing.
-& "$root\venv\Scripts\pip.exe" install --quiet "$($PSScriptRoot)[windows]"
+& "$root\venv\Scripts\pip.exe" install --quiet --disable-pip-version-check "$($PSScriptRoot)[windows]"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "==> Checking the printer"
