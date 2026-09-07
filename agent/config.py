@@ -38,6 +38,21 @@ def config_path() -> Path:
     return Path("/etc/printvendo/agent.json")
 
 
+def log_path() -> Path:
+    """Where this machine's agent writes what it did.
+
+    Beside the config, because that is the folder an operator is already told
+    about, and because `%PROGRAMDATA%` is writable by a service and survives a
+    user profile being reset.
+
+    A Pi has `journalctl -u printvendo-agent` and needs none of this; a Windows
+    kiosk has nothing, which is how three hours went into working out why a
+    shop had gone quiet. It is written on both platforms anyway -- one place to
+    look beats two answers to "where is the log".
+    """
+    return config_path().parent / "agent.log"
+
+
 @dataclass
 class Config:
     api_url: str = DEFAULT_API

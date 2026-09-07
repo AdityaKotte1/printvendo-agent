@@ -18,13 +18,21 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
 
 import httpx
 
 from agent import display_server
 from agent import status as shop_status
 from agent.api import Backend, enrol
-from agent.config import Config, config_path, default_printer, printers, ssh_host
+from agent.config import (
+    Config,
+    config_path,
+    default_printer,
+    log_path,
+    printers,
+    ssh_host,
+)
 from agent.pools import pick, pool_for
 from agent.printing import IS_WINDOWS, ghostscript_path
 from agent.runner import PrinterHealth, run_once
@@ -37,7 +45,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -87,9 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     running.add_argument("--once", action="store_true", help="one pass, then stop")
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    _start_logging()
 
     if args.command == "printers":
         return _list_printers()
@@ -98,6 +104,48 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "check":
         return _check()
     return _run(once=args.once)
+
+
+def _start_logging() -> None:
+    """To the console, and to a file the agent owns.
+
+    **The file is why this exists.** The scheduled task used to capture the log
+    by running the agent under `cmd.exe /c ... >> agent.log`, which attaches it
+    to the operator's own console -- so a Ctrl+C in their terminal, or simply
+    closing that window, killed the shop's agent with
+    `STATUS_CONTROL_C_EXIT`. It did, on a live kiosk. Writing the file here
+    means the task can run the executable directly, with no shell to inherit a
+    console from and nothing for a terminal to signal.
+
+    Rotated, because this runs unattended for months on a machine nobody is
+    watching the disk of. Three files of five megabytes is a few days of
+    heartbeats at the busiest shop and cannot grow past fifteen.
+
+    A file that cannot be opened is not fatal: a kiosk that refused to print
+    because it could not write a log would be trading the shop for the record
+    of the shop.
+    """
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    try:
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                path, maxBytes=5_000_000, backupCount=2, encoding="utf-8"
+            )
+        )
+    except OSError:
+        pass
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+    )
+
+    if len(handlers) == 1:
+        log.warning("could not open %s; logging to the console only", log_path())
 
 
 def _list_printers() -> int:

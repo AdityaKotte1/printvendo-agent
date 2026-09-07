@@ -278,13 +278,35 @@ Write-Host "==> Installing the service"
 # A scheduled task rather than a Windows service: a service needs a wrapper
 # (NSSM or pywin32's service host) and this needs neither, starts at boot
 # without anybody logging in, and restarts on failure.
+# The executable directly, never through `cmd.exe`.
+#
+# The log used to be captured by `cmd /c "$exe" run >> agent.log`, which
+# attaches the agent to whichever console started the task -- so a Ctrl+C in the
+# installer's own PowerShell window, or just closing it, killed the shop's agent
+# with STATUS_CONTROL_C_EXIT. That happened on a live kiosk. The agent writes
+# its own file now (`_start_logging`), so there is nothing to redirect and no
+# console to inherit.
 $action = New-ScheduledTaskAction -Execute $exe -Argument "run"
-$trigger = New-ScheduledTaskTrigger -AtStartup
+
+# At logon rather than at startup, and as the logged-in user rather than SYSTEM.
+#
+# Ghostscript's mswinpr2 device needs an interactive window station: as SYSTEM
+# in session 0 it blocks for ever without ever reaching the spooler, so a kiosk
+# claimed jobs, downloaded them and printed nothing. Until printing goes through
+# PCL and the raw spooler, the agent has to live in a real session.
+#
+# The consequence is stated rather than hidden: this machine must log in
+# automatically, or the shop does not come back after a power cut.
+$trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -Hidden
+
+$principal = New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\$env:USERNAME" `
+    -LogonType Interactive -RunLevel Highest
 
 Register-ScheduledTask -TaskName "PrintvendoAgent" -Action $action -Trigger $trigger `
-    -Settings $settings -User "SYSTEM" -RunLevel Highest -Force | Out-Null
+    -Settings $settings -Principal $principal -Force | Out-Null
 
 # Stop before start, because Start-ScheduledTask does nothing to a task that is
 # already running -- and enrolling above has just rotated this kiosk's token, so
