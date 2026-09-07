@@ -168,6 +168,28 @@ function Install-Ghostscript {
     return $run.ExitCode
 }
 
+# ── is this actually an Administrator shell? ────────────────────────────────
+#
+# Checked first, because a run without it does not fail cleanly: it installs
+# the agent, enrols the kiosk, registers the task, and *then* throws a raw
+# .NET UnauthorizedAccessException at the registry write -- so the operator has
+# a half-configured shop and a stack trace. It happened.
+#
+# Worse, a re-install can get further than a first install: `C:\Program Files\
+# Printvendo` already exists from the elevated run, so the unprivileged one
+# writes into it happily and looks like it worked.
+$me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "This needs an Administrator PowerShell." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Start, type powershell, right-click Windows PowerShell,"
+    Write-Host "  then Run as administrator -- and run this again."
+    Write-Host ""
+    Write-Host "Without it the agent installs, the kiosk enrols, and the setup"
+    Write-Host "fails at the end with the shop half configured."
+    exit 1
+}
+
 Write-Host "==> Checking what is installed"
 Sync-Path
 
@@ -355,9 +377,19 @@ if ($Pin) {
         # Ctrl+Alt+Del itself -- is reserved by Windows and cannot be blocked
         # from user space by anything, which is stated here rather than
         # discovered at a counter.
+        # Closes the useful half of the Ctrl+Alt+Del door, and is the one step
+        # here the shop can live without -- so it reports rather than throws.
+        # Ctrl+Alt+Del itself is reserved by Windows and cannot be blocked from
+        # user space by anything.
         $policy = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-        New-Item -Path $policy -Force | Out-Null
-        Set-ItemProperty -Path $policy -Name DisableTaskMgr -Value 1 -Type DWord
+        try {
+            if (-not (Test-Path $policy)) { New-Item -Path $policy -Force | Out-Null }
+            Set-ItemProperty -Path $policy -Name DisableTaskMgr -Value 1 -Type DWord -ErrorAction Stop
+        }
+        catch {
+            Write-Host "    could not disable Task Manager: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "    the screen still locks; a determined student has one more way out"
+        }
 
         Write-Host "    shortcut on the desktop: Printvendo screen"
         Write-Host "    Ctrl+Alt+U and the PIN leaves it"
