@@ -63,6 +63,20 @@ SWP_NOACTIVATE = 0x0010
 
 DEFAULT_URL = "http://127.0.0.1:8765"
 
+# Said when the hook is refused. It carries Windows' own error rather than a
+# guess: the first machine to hit this was already the signed-in user, and the
+# guess -- "run it as the logged-in user" -- sent somebody looking in the wrong
+# place for twenty minutes.
+NO_HOOK = (
+    "Could not install the keyboard hook, so this screen would look locked "
+    "and would not be.\n"
+    "\n"
+    "{reasons}\n"
+    "\n"
+    "It must run as the signed-in user on a real desktop session -- not as "
+    "SYSTEM, and not over a session that has been disconnected."
+)
+
 EDGE_PATHS = (
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -221,14 +235,36 @@ class Guard:
         return USER32.CallNextHookEx(None, code, wparam, lparam)
 
     def hold(self) -> None:
-        self.hook = USER32.SetWindowsHookExW(
-            WH_KEYBOARD_LL, self._proc, KERNEL32.GetModuleHandleW(None), 0
-        )
-        if not self.hook:
-            raise OSError(
-                "Could not install the keyboard hook, so this would look locked "
-                "and not be. Run it as the logged-in user, not as SYSTEM."
+        """Install the hook, or say why not in Windows' own words.
+
+        Asked two ways, because the right `hMod` for a low-level hook is
+        contested in practice. The documentation says NULL when the procedure
+        is in the current process; every recipe passes the executable's module
+        handle. A ctypes callback lives in allocated memory rather than inside
+        the module image, so the module handle is a claim that is not quite
+        true -- and the first machine to refuse this refused exactly that.
+
+        The message carries the error number. The version before it guessed
+        "run it as the logged-in user", which was wrong for the machine that
+        hit it: that *was* the logged-in user, and the guess sent somebody
+        looking in the wrong place.
+        """
+        reasons: list[str] = []
+
+        for hmod in (KERNEL32.GetModuleHandleW(None), None):
+            ctypes.set_last_error(0)
+            self.hook = USER32.SetWindowsHookExW(
+                WH_KEYBOARD_LL, self._proc, hmod, 0
             )
+            if self.hook:
+                return
+            code = ctypes.get_last_error()
+            reasons.append(f"error {code}: {ctypes.FormatError(code).strip()}")
+
+        raise OSError(
+            NO_HOOK.format(reasons="\n".join(reasons))
+        )
+
 
     def release(self) -> None:
         if self.hook:
