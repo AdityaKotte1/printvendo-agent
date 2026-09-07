@@ -238,6 +238,23 @@ if (-not $gsPath) {
 
 Write-Host "    python $version, $(Split-Path $gsPath -Leaf)"
 
+# ── stop whatever is already running ───────────────────────────────────────
+#
+# `python -m venv` recreates venv\Scripts\python.exe, and Windows will not let
+# it while a process is running from that file. A re-install therefore died
+# with "Permission denied: python.exe" and the installer blamed Python -- which
+# is a lie. Python was fine; the old agent was still using it.
+#
+# Stopped here, before anything is written, rather than at the end where the
+# task is registered: by then the damage is a half-replaced install.
+Write-Host "==> Stopping anything already running"
+Stop-ScheduledTask -TaskName "PrintvendoAgent" -ErrorAction SilentlyContinue
+Get-Process printvendo-agent, printvendo-display -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+
+# The scheduler returns before the process has actually let go of the file.
+Start-Sleep -Seconds 2
+
 Write-Host "==> Installing the agent"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 & python -m venv "$root\venv"
@@ -245,7 +262,15 @@ New-Item -ItemType Directory -Force -Path $root | Out-Null
 # recognised", which reads as a missing file rather than as the thing that was
 # never made.
 if ($LASTEXITCODE -ne 0) {
-    Need "a usable Python" "python -m venv failed. Install Python 3.12 from python.org, ticking 'Add python.exe to PATH', then run this again."
+    # "Permission denied: python.exe" here is almost never Python. It is
+    # something still running from the old virtual environment -- an agent
+    # started by hand, a display, or a console window somebody left open.
+    Need "a writable install folder" "python -m venv could not write to $root\venv."
+    Write-Host "  If that said 'Permission denied: python.exe', something is still" -ForegroundColor Yellow
+    Write-Host "  running from the old install. Close any printvendo window, then:"
+    Write-Host "      Get-Process printvendo-agent, printvendo-display | Stop-Process -Force"
+    Write-Host "  If it said something else, install Python 3.12 from python.org,"
+    Write-Host "  ticking 'Add python.exe to PATH', and run this again."
     exit 1
 }
 # Through the venv's python, never pip.exe: on Windows pip refuses to replace
