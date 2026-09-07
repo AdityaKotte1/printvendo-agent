@@ -37,6 +37,15 @@ from display import lock as locking
 USER32 = ctypes.WinDLL("user32", use_last_error=True)
 KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
+# ctypes assumes every function returns a C `int` unless told otherwise. On
+# 64-bit Windows that is four bytes where the API returns eight, so a hook
+# handle comes back truncated and `LRESULT` is returned truncated -- which is
+# undefined behaviour inside a callback Windows invokes on every keystroke.
+#
+# So every signature used here is declared. `wintypes.MSG` and the rest are the
+# right widths already; what was missing was saying so.
+LRESULT = ctypes.c_ssize_t
+
 WH_KEYBOARD_LL = 13
 WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
 HC_ACTION = 0
@@ -45,9 +54,12 @@ VK_TAB, VK_ESCAPE, VK_F4, VK_U = 0x09, 0x1B, 0x73, 0x55
 VK_LWIN, VK_RWIN = 0x5B, 0x5C
 VK_CONTROL, VK_MENU, VK_SHIFT = 0x11, 0x12, 0x10
 
-HWND_TOPMOST = -1
+# A pseudo-handle. Passed as an int it is marshalled as 32 bits and the window
+# is placed relative to nothing.
+HWND_TOPMOST = wintypes.HWND(-1)
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
+SWP_NOACTIVATE = 0x0010
 
 DEFAULT_URL = "http://127.0.0.1:8765"
 
@@ -67,9 +79,88 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
+# LRESULT, not c_long: the return value is what tells Windows whether to pass
+# the keystroke on, and a truncated one is a lock that works by luck.
 HOOKPROC = ctypes.WINFUNCTYPE(
-    ctypes.c_long, ctypes.c_int, wintypes.WPARAM, ctypes.POINTER(KBDLLHOOKSTRUCT)
+    LRESULT, ctypes.c_int, wintypes.WPARAM, ctypes.POINTER(KBDLLHOOKSTRUCT)
 )
+
+USER32.SetWindowsHookExW.restype = wintypes.HHOOK
+USER32.SetWindowsHookExW.argtypes = (
+    ctypes.c_int,
+    HOOKPROC,
+    wintypes.HINSTANCE,
+    wintypes.DWORD,
+)
+USER32.CallNextHookEx.restype = LRESULT
+USER32.CallNextHookEx.argtypes = (
+    wintypes.HHOOK,
+    ctypes.c_int,
+    wintypes.WPARAM,
+    ctypes.POINTER(KBDLLHOOKSTRUCT),
+)
+USER32.UnhookWindowsHookEx.restype = wintypes.BOOL
+USER32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+
+USER32.GetAsyncKeyState.restype = ctypes.c_short
+USER32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+
+USER32.GetForegroundWindow.restype = wintypes.HWND
+USER32.GetForegroundWindow.argtypes = ()
+USER32.SetWindowPos.restype = wintypes.BOOL
+USER32.SetWindowPos.argtypes = (
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+)
+
+USER32.MessageBoxW.restype = ctypes.c_int
+USER32.MessageBoxW.argtypes = (
+    wintypes.HWND,
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    wintypes.UINT,
+)
+
+USER32.PeekMessageW.restype = wintypes.BOOL
+USER32.PeekMessageW.argtypes = (
+    ctypes.POINTER(wintypes.MSG),
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.UINT,
+)
+USER32.TranslateMessage.argtypes = (ctypes.POINTER(wintypes.MSG),)
+USER32.DispatchMessageW.restype = LRESULT
+USER32.DispatchMessageW.argtypes = (ctypes.POINTER(wintypes.MSG),)
+
+KERNEL32.GetModuleHandleW.restype = wintypes.HMODULE
+KERNEL32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
+
+
+MB_OK, MB_ICONERROR, MB_TOPMOST = 0x0, 0x10, 0x40000
+
+
+def say(message: str) -> None:
+    """Tell whoever started this, however they started it.
+
+    Launched from a shortcut there is no console to read: the window appears
+    and vanishes, which is indistinguishable from a crash and is exactly how
+    this was first reported. So a refusal is also a message box.
+
+    Printed as well, because run from PowerShell the box is the annoying half.
+    """
+    print(message)
+    try:
+        USER32.MessageBoxW(
+            None, message, "Printvendo screen", MB_OK | MB_ICONERROR | MB_TOPMOST
+        )
+    except Exception:  # noqa: BLE001 - saying so must not become the failure
+        pass
 
 
 def _down(vk: int) -> bool:
@@ -178,13 +269,27 @@ class Guard:
         second, which is a shorter game than they were hoping for.
         """
         while not self.finished.is_set():
-            if self.edge is not None and self.edge.poll() is not None and not self.unlocking:
+            if self.unlocking:
+                # Somebody is at the PIN box. Leave the windows alone.
+                self.finished.wait(0.5)
+                continue
+
+            if self.edge is not None and self.edge.poll() is not None:
                 self.open_page()
 
             window = USER32.GetForegroundWindow()
             if window:
+                # NOACTIVATE as well: without it this steals focus once a
+                # second, and the PIN box -- which is the one window that
+                # should have it -- cannot keep it long enough to be typed in.
                 USER32.SetWindowPos(
-                    window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE
+                    window,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 )
             self.finished.wait(1.0)
 
@@ -196,6 +301,8 @@ class Guard:
         be made to fake."""
         if self.unlocking:
             return
+        # Set before the window opens, so `keep_it_there` stops forcing Edge
+        # to the front while somebody is typing into the prompt.
         self.unlocking = True
         threading.Thread(target=self._pin_window, daemon=True).start()
 
@@ -270,22 +377,24 @@ def main(argv: list[str] | None = None) -> int:
     if the_lock is None:
         # Refused rather than locked with a PIN nobody knows. A screen that
         # cannot be dismissed is a shop PC that has to be power-cycled to use.
-        print("No PIN is set, so this would lock the machine with no way out.")
-        print("Set one first:  printvendo-display --set-pin 2468")
+        say(
+            "No PIN is set, so this screen would lock the machine with no "
+            "way out.\n\nSet one first:\n    printvendo-display --set-pin 2468"
+        )
         return 1
 
     guard = Guard(url=args.url, the_lock=the_lock)
     try:
         guard.hold()
     except OSError as exc:
-        print(str(exc))
+        say(str(exc))
         return 1
 
     try:
         guard.open_page()
     except FileNotFoundError as exc:
         guard.release()
-        print(str(exc))
+        say(str(exc))
         return 1
 
     threading.Thread(target=guard.keep_it_there, daemon=True).start()
