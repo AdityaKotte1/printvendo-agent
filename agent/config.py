@@ -72,6 +72,20 @@ class Config:
     # Recorded so an operator can tell one physical box from another over SSH.
     # An identifier, never a credential -- it survives re-enrolment.
     device_key: str = ""
+    # Render to PCL and write the bytes to the spooler, rather than printing
+    # through Ghostscript's `mswinpr2` device.
+    #
+    # This is the way out of needing a desktop session: `mswinpr2` asks the
+    # printer driver for a DEVMODE, and a driver that wants to show UI to do it
+    # blocks for ever in session 0. Everything the agent does about that --
+    # running as the signed-in user, at logon, automatic sign-in, a repeat
+    # trigger -- is a workaround for that one call.
+    #
+    # Off by default, because RAW means the printer's own firmware reads the
+    # bytes: an office laser understands PCL, a host-based inkjet expects the
+    # driver to rasterise and would print pages of garbage. That is a student's
+    # money and a shop's paper, so a person looks at a test page first.
+    raw_printing: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

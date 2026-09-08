@@ -207,6 +207,66 @@ def build_windows_command(
     return cmd
 
 
+def build_pcl_command(
+    task: Task,
+    *,
+    file_path: str,
+    out_path: str,
+    ghostscript: str = "gswin64c",
+) -> list[str]:
+    """Render this task to PCL, for `rawprint.spool` to hand to the printer.
+
+    The way out of `mswinpr2`. That device asks the printer *driver* for a
+    DEVMODE, and a driver that wants to show UI to do it blocks for ever in a
+    session with no desktop -- which is why the agent has to run as a signed-in
+    user, at logon, with automatic sign-in, with a repeat trigger. Every one of
+    those is a workaround for this one call.
+
+    A `pxl` device needs no driver and no desktop. It writes PCL-XL, which the
+    printer's own firmware interprets.
+
+    **Colour is the device, not a hint.** `mswinpr2` took
+    `<< /BitsPerPixel >>`, which the comment there admits some drivers ignore --
+    so a student could pay colour prices and collect grey. Choosing pxlcolor or
+    pxlmono decides it here, where it cannot be overridden downstream.
+
+    **Copies are not here at all.** PCL carries a copies attribute that
+    printers honour inconsistently, so `rawprint.spool` sends the document once
+    per copy instead. One copy of a job somebody paid three copies for is the
+    silent wrongness this module exists to end.
+    """
+    cmd = [
+        ghostscript,
+        "-dNOPAUSE",
+        "-dBATCH",
+        "-dNoCancel",
+        # A PDF is somebody else's file and Ghostscript will run what is inside
+        # it given the chance. It matters more here, not less: this is the
+        # machine sitting in a shop.
+        "-dSAFER",
+        "-sDEVICE=" + ("pxlcolor" if task.colour else "pxlmono"),
+        "-sOutputFile=" + out_path,
+    ]
+
+    # Stated in both directions, as on CUPS and as `mswinpr2` did: a printer
+    # left in whatever duplex mode the last job used is how somebody's
+    # single-sided job comes out on both sides.
+    if task.duplex:
+        cmd += ["-c", "<< /Duplex true /Tumble false >> setpagedevice"]
+    else:
+        cmd += ["-c", "<< /Duplex false >> setpagedevice"]
+
+    pages = pages_in(task.page_range)
+    if pages:
+        # An explicit list: -sPageList does not take CUPS's range syntax.
+        cmd += ["-sPageList=" + ",".join(str(page) for page in pages)]
+
+    # -f ends the -c postscript and says "the rest is input", so a filename
+    # that begins with a dash cannot be read as a switch.
+    cmd += ["-f", file_path]
+    return cmd
+
+
 def ghostscript_path(configured: str | None = None) -> str:
     """Where Ghostscript is, by whichever name this machine uses."""
     from shutil import which
@@ -280,6 +340,70 @@ def build_command(
     return build_cups_command(task, file_path=file_path, printer=printer)
 
 
+def _print_raw(
+    task: Task,
+    *,
+    file_path: Path,
+    printer: str,
+    ghostscript: str | None,
+    timeout: int,
+    on_tick: Callable[[], None] | None,
+    on_state: Callable[[JobState], None] | None,
+) -> None:
+    """Render to PCL, hand the bytes to the spooler, follow the queue.
+
+    The rendering is a subprocess like every other Ghostscript call; the
+    difference is where the output goes. Nothing here touches a printer driver,
+    so nothing here needs a window station.
+    """
+    import tempfile
+
+    from agent import rawprint
+
+    with tempfile.TemporaryDirectory(prefix="printvendo-pcl-") as folder:
+        out_path = str(Path(folder) / f"{task.task_id}.pcl")
+        cmd = build_pcl_command(
+            task,
+            file_path=str(file_path),
+            out_path=out_path,
+            ghostscript=ghostscript_path(ghostscript),
+        )
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"rendering failed ({result.returncode}): "
+                f"{(result.stderr or result.stdout or '').strip()[:300]}"
+            )
+
+        data = Path(out_path).read_bytes()
+
+    if not data:
+        # Ghostscript exiting 0 having written nothing means the page range
+        # selected nothing real. Spooling an empty job would report a print
+        # that never happened.
+        raise RuntimeError("rendering produced no pages to print")
+
+    before = windows_job_ids(printer)
+    # The task's id, never the student's filename: the spooler keeps job
+    # history long after the document is gone.
+    rawprint.spool(printer, data, job_name=task.task_id, copies=task.copies)
+
+    watch = windows_watcher(printer, windows_job_ids(printer) - before)
+    outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
+
+    if outcome is JobState.ERROR:
+        raise PrinterStuck(
+            "the printer stopped on this job -- it may be out of paper, "
+            "jammed, or switched off"
+        )
+    if outcome is not JobState.GONE:
+        raise PrinterStuck(
+            "the printer still has this job after a long wait -- it may be out "
+            "of paper, jammed, or switched off"
+        )
+
+
 class PrinterStuck(RuntimeError):
     """The printer took the job and did not finish it.
 
@@ -305,8 +429,16 @@ def print_task(
     timeout: int = 600,
     on_tick: Callable[[], None] | None = None,
     on_state: Callable[[JobState], None] | None = None,
+    raw: bool = False,
 ) -> None:
     """Send it to the printer and wait for the queue to let go of it.
+
+    `raw` renders to PCL and writes the bytes to the spooler rather than going
+    through `mswinpr2`. It is opt-in per kiosk because RAW means the printer's
+    own firmware reads the bytes: an office laser understands PCL, a host-based
+    inkjet expects the driver to rasterise and would print pages of garbage --
+    a student's money and a shop's paper. `printvendo-agent test-raw` prints one
+    page so somebody can look before trusting it.
 
     **Returning is what makes the student's screen say "printed"**, so it must
     not happen a moment early. `lp` returns when the job is queued and
@@ -324,6 +456,18 @@ def print_task(
     refund within reach. Swallowing any of them would leave a student holding
     nothing and a screen saying it printed.
     """
+    if raw and IS_WINDOWS:
+        _print_raw(
+            task,
+            file_path=file_path,
+            printer=printer,
+            ghostscript=ghostscript,
+            timeout=timeout,
+            on_tick=on_tick,
+            on_state=on_state,
+        )
+        return
+
     cmd = build_command(
         task, file_path=str(file_path), printer=printer, ghostscript=ghostscript
     )

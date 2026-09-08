@@ -18,7 +18,9 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import httpx
 
@@ -34,7 +36,7 @@ from agent.config import (
     ssh_host,
 )
 from agent.pools import pick, pool_for
-from agent.printing import IS_WINDOWS, ghostscript_path
+from agent.printing import IS_WINDOWS, ghostscript_path, print_task
 from agent.runner import PrinterHealth, run_once
 from agent.single import AlreadyRunning, only_one_agent
 from agent.waiting import queue_depth
@@ -45,7 +47,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.7.6"
+VERSION = "1.8.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -89,7 +91,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     commands.add_parser("check", help="is this machine ready to print")
+    commands.add_parser(
+        "test-raw", help="print one page the PCL way, to see whether it works here"
+    )
     commands.add_parser("printers", help="list the printers this machine can see")
+
+    raw = commands.add_parser(
+        "raw", help="print by rendering to PCL rather than through the driver"
+    )
+    switch = raw.add_mutually_exclusive_group(required=True)
+    switch.add_argument("--on", action="store_true")
+    switch.add_argument("--off", action="store_true")
 
     running = commands.add_parser("run", help="claim and print, for ever")
     running.add_argument("--once", action="store_true", help="one pass, then stop")
@@ -103,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
         return _enrol(args)
     if args.command == "check":
         return _check()
+    if args.command == "test-raw":
+        return _test_raw()
+    if args.command == "raw":
+        return _set_raw(bool(args.on))
     return _run(once=args.once)
 
 
@@ -311,6 +327,83 @@ def _check() -> int:
     return 0
 
 
+def _test_raw() -> int:
+    """Print one page by the PCL path, so somebody can look before trusting it.
+
+    RAW means the printer's own firmware reads the bytes. An office laser
+    understands PCL; a host-based inkjet expects the driver to rasterise and
+    would print pages of garbage. That is a student's money and a shop's paper,
+    so this exists to be run once at a counter and looked at.
+    """
+    import subprocess
+    import tempfile
+
+    from agent import rawprint
+
+    config = Config.load()
+    printer = config.printer or (config.every_printer or [None])[0]
+    if not printer:
+        print("No printer is configured. Run: printvendo-agent printers")
+        return 1
+
+    page = (
+        "/Helvetica findfont 22 scalefont setfont "
+        "72 720 moveto (Printvendo test page) show "
+        "/Helvetica findfont 12 scalefont setfont "
+        "72 690 moveto (If you can read this, this printer understands PCL.) show "
+        "72 670 moveto (Turn it on with: printvendo-agent raw --on) show "
+        "showpage"
+    )
+
+    with tempfile.TemporaryDirectory(prefix="printvendo-test-") as folder:
+        out = str(Path(folder) / "test.pcl")
+        cmd = [
+            ghostscript_path(),
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-dSAFER",
+            "-sDEVICE=pxlmono",
+            f"-sOutputFile={out}",
+            "-c",
+            page,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            print("Ghostscript could not render the test page:")
+            print((result.stderr or result.stdout or "").strip()[:400])
+            return 1
+
+        data = Path(out).read_bytes()
+
+    try:
+        rawprint.spool(printer, data, job_name="printvendo-test")
+    except Exception as exc:  # noqa: BLE001 - the message is for a person
+        print(f"Could not send it to '{printer}': {exc}")
+        return 1
+
+    print(f"Sent one page to '{printer}'.")
+    print("")
+    print("Go and look at it.")
+    print("  Readable text          -> this printer understands PCL.")
+    print("                            Turn it on: printvendo-agent raw --on")
+    print("  Pages of nonsense      -> it does not. Leave raw printing off.")
+    print("  Nothing at all         -> check the queue; it may be paused.")
+    return 0
+
+
+def _set_raw(on: bool) -> int:
+    config = Config.load()
+    config.raw_printing = on
+    config.save()
+    if on:
+        print("Raw PCL printing is on. Restart the agent for it to take effect.")
+        print("  Stop-ScheduledTask -TaskName PrintvendoAgent")
+        print("  Start-ScheduledTask -TaskName PrintvendoAgent")
+    else:
+        print("Raw PCL printing is off. Printing goes through the printer driver.")
+    return 0
+
+
 def _run(*, once: bool = False) -> int:
     config = Config.load()
     if not config.ready:
@@ -374,6 +467,13 @@ def _loop(config: Config, *, once: bool = False) -> int:
         restart.
         """
         return pick(pool_for(config.pools, colour=task.colour), queue_depth)
+
+    # How this machine prints, decided once rather than per job. `raw_printing`
+    # is the PCL path; without it, Ghostscript's `mswinpr2`, which is what needs
+    # a desktop session.
+    printing_fn = partial(print_task, raw=config.raw_printing)
+    if config.raw_printing:
+        log.info("printing by rendering to PCL and spooling it raw")
 
     if config.pools.configured:
         log.info(
@@ -439,6 +539,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
                 on_tick=beat,
                 health=health,
                 on_job=on_job,
+                printer_fn=printing_fn,
             )
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the loop
             log.error("this pass failed: %s", exc)

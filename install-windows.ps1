@@ -15,6 +15,14 @@ param(
     #   -Bw 'Mono-1','Mono-2' -Colour 'Colour-1'
     [string[]]$Bw = @(),
     [string[]]$Colour = @(),
+    # Print by rendering to PCL and writing the bytes to the spooler, rather
+    # than through Ghostscript's mswinpr2 device.
+    #
+    # Off unless asked for. RAW means the printer's own firmware reads the
+    # bytes: an office laser understands PCL, a host-based inkjet expects the
+    # driver to rasterise and would print pages of garbage. Run
+    # `printvendo-agent test-raw` and look at the page before turning it on.
+    [switch]$Raw,
     # The shop screen. Passing a PIN sets one up: a desktop shortcut that opens
     # the locked display, and the PIN that leaves it. Without this nothing about
     # the screen is installed and the kiosk prints exactly as before.
@@ -439,6 +447,12 @@ if ($Pin) {
         Write-Host "    shortcut on the desktop: Printvendo screen"
         Write-Host "    Ctrl+Alt+U and the PIN leaves it"
     }
+}
+
+if ($Raw) {
+    Write-Host "==> Printing by rendering to PCL"
+    & $exe raw --on | Out-Null
+    Write-Host "    check it with: printvendo-agent test-raw"
 }
 
 Write-Host ""
