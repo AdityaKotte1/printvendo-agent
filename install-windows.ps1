@@ -344,10 +344,30 @@ $action = New-ScheduledTaskAction -Execute $exe -Argument "run"
 #
 # The consequence is stated rather than hidden: this machine must log in
 # automatically, or the shop does not come back after a power cut.
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+# Two triggers, because one was not enough.
+#
+# At logon is the one that matters: the agent has to live in a real desktop
+# session, so it starts when somebody signs in. But a logon trigger fires
+# exactly once, and anything that eats it -- a shutdown that did not fully log
+# off, a session started before the task existed, a trigger Windows simply did
+# not run -- leaves the shop dark until a person notices and clicks something.
+# That happened: a kiosk shut down for the night came back in the morning with
+# no agent.
+#
+# So a repeat every five minutes stands behind it. `only_one_agent()` refuses a
+# second agent and MultipleInstances keeps the scheduler from stacking them, so
+# the cost of a redundant trigger is a process that starts and exits.
+#
+# Neither helps if nobody logs in at all -- an interactive task has no session
+# to run in. That is what the automatic sign-in is for, and why the installer
+# says so at the end.
+$atLogon = New-ScheduledTaskTrigger -AtLogOn
+$everyFiveMinutes = New-ScheduledTaskTrigger -Once -At (Get-Date).Date `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+$trigger = @($atLogon, $everyFiveMinutes)
 $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -Hidden
+    -Hidden -MultipleInstances IgnoreNew -StartWhenAvailable
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\$env:USERNAME" `
     -LogonType Interactive -RunLevel Highest
@@ -423,6 +443,13 @@ if ($Pin) {
 
 Write-Host ""
 Write-Host "Done. The kiosk is printing." -ForegroundColor Green
+Write-Host ""
+Write-Host "This machine must sign in by itself." -ForegroundColor Yellow
+Write-Host "  The agent runs in a desktop session -- Ghostscript will not print"
+Write-Host "  without one -- so a PC sitting at the lock screen is a shop that"
+Write-Host "  cannot print, whatever the schedule says."
+Write-Host "  Set it up:  netplwiz   (untick 'Users must enter a user name')"
+Write-Host "  And never sleep:  powercfg /change standby-timeout-ac 0"
 Write-Host "  Check it:  & '$exe' check"
 Write-Host "  Watch it:  Get-ScheduledTask PrintvendoAgent"
 Write-Host "  Stop it:   Stop-ScheduledTask -TaskName PrintvendoAgent"
