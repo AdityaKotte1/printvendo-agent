@@ -339,3 +339,40 @@ def test_a_shop_with_one_printer_still_uses_it(tmp_path):
     run_once(backend, printer="EPSON_L6460", workspace=tmp_path, printer_fn=_sent_to(sent))
 
     assert sent == [("tsk_1", "EPSON_L6460")]
+
+
+# ── which job this machine is holding ───────────────────────────────────────
+
+
+def test_the_job_in_hand_is_named_while_it_prints_and_forgotten_after(tmp_path):
+    """What the heartbeat sends. A job still named after it finished keeps a
+    lease alive for nothing; one never named lets a slow printer's job run out
+    of lease underneath it."""
+    held: list = []
+    printed: list[Task] = []
+    backend = FakeBackend([a_task("tsk_1"), a_task("tsk_2")])
+
+    run_once(
+        backend,
+        printer="Shop",
+        workspace=tmp_path,
+        printer_fn=printer_that_works(printed),
+        on_hold=held.append,
+    )
+
+    assert held == ["tsk_1", None, "tsk_2", None]
+
+
+def test_a_failed_job_is_forgotten_too(tmp_path):
+    held: list = []
+    backend = FakeBackend([a_task("tsk_1")])
+
+    run_once(
+        backend,
+        printer="Shop",
+        workspace=tmp_path,
+        printer_fn=printer_that_fails,
+        on_hold=held.append,
+    )
+
+    assert held == ["tsk_1", None]

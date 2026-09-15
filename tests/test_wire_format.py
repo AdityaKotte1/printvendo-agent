@@ -299,3 +299,24 @@ def test_a_heartbeat_with_no_body_is_still_a_heartbeat():
     )
 
     assert _backend(client).heartbeat(agent_version="1.6.0") == {}
+
+
+# ── the job in hand ─────────────────────────────────────────────────────────
+
+
+def test_a_heartbeat_names_the_job_in_hand(sent):
+    """The server renews the lease of the job a heartbeat names. Without it, a
+    job waiting behind an empty tray was declared lost and handed out again."""
+    seen, client = sent
+
+    _backend(client).heartbeat(agent_version="1.9.0", task_id="tsk_7")
+
+    assert seen[0]["body"] == {"agent_version": "1.9.0", "task_id": "tsk_7"}
+
+
+def test_an_idle_heartbeat_names_no_job(sent):
+    seen, client = sent
+
+    _backend(client).heartbeat(agent_version="1.9.0", task_id=None)
+
+    assert "task_id" not in seen[0]["body"]

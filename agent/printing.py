@@ -29,6 +29,7 @@ from pathlib import Path
 
 from agent.waiting import (
     JobState,
+    cancel_windows_jobs,
     cups_job_id,
     cups_watcher,
     wait_until_idle,
@@ -389,19 +390,40 @@ def _print_raw(
     # history long after the document is gone.
     rawprint.spool(printer, data, job_name=task.task_id, copies=task.copies)
 
-    watch = windows_watcher(printer, windows_job_ids(printer) - before)
+    ours = windows_job_ids(printer) - before
+    watch = windows_watcher(printer, ours)
     outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
 
+    _judge(printer, ours, outcome)
+
+
+def _judge(printer: str, ours: set[int], outcome: JobState) -> None:
+    """Return if the job left the queue; otherwise take back what never printed,
+    and raise.
+
+    A job the printer stopped on, or one that never started, stays in the
+    Windows spooler after we give up -- and prints whenever paper goes in,
+    after the student was told it failed and possibly refunded. That is how one
+    shop printed a stack of jobs with no new orders. So ours come out of the
+    queue first.
+
+    A job still PRINTING when the wait ran out is left alone: cutting it off
+    would hand the student half a document. It is still reported, so a person
+    looks.
+    """
+    if outcome is JobState.GONE:
+        return
+    if IS_WINDOWS and outcome is not JobState.PRINTING:
+        cancel_windows_jobs(printer, ours)
     if outcome is JobState.ERROR:
         raise PrinterStuck(
             "the printer stopped on this job -- it may be out of paper, "
             "jammed, or switched off"
         )
-    if outcome is not JobState.GONE:
-        raise PrinterStuck(
-            "the printer still has this job after a long wait -- it may be out "
-            "of paper, jammed, or switched off"
-        )
+    raise PrinterStuck(
+        "the printer still has this job after a long wait -- it may be out "
+        "of paper, jammed, or switched off"
+    )
 
 
 class PrinterStuck(RuntimeError):
@@ -484,9 +506,11 @@ def print_task(
             f"{(result.stderr or result.stdout or '').strip()[:300]}"
         )
 
+    ours: set[int] = set()
     if IS_WINDOWS:
         # Whatever appeared after we printed is ours.
-        watch = windows_watcher(printer, windows_job_ids(printer) - before)
+        ours = windows_job_ids(printer) - before
+        watch = windows_watcher(printer, ours)
     else:
         # `lp` names the job it made. Without that there is nothing to follow,
         # and `cups_job_id` raises rather than letting the agent guess.
@@ -494,16 +518,7 @@ def print_task(
 
     outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
 
-    if outcome is JobState.ERROR:
-        raise PrinterStuck(
-            "the printer stopped on this job -- it may be out of paper, "
-            "jammed, or switched off"
-        )
-    if outcome is not JobState.GONE:
-        raise PrinterStuck(
-            "the printer still has this job after a long wait -- it may be out "
-            "of paper, jammed, or switched off"
-        )
+    _judge(printer, ours, outcome)
 
     # The queue letting go means CUPS finished *sending*, not that paper has
     # stopped. A fifteen-page job streams into the printer's buffer in seconds

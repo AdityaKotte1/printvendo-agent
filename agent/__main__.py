@@ -47,7 +47,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -454,6 +454,14 @@ def _loop(config: Config, *, once: bool = False) -> int:
             snapshot, updated_at=datetime.now(UTC), printer_ok=not health.stuck, **fields
         )
 
+    # The job this machine is holding, named in every heartbeat so the server
+    # renews its lease. None between jobs.
+    holding: str | None = None
+
+    def on_hold(task_id: str | None) -> None:
+        nonlocal holding
+        holding = task_id
+
     def on_job(state: str | None, sheets: int | None = None) -> None:
         note(job=shop_status.Job(state=state, sheets=sheets) if state else None)
 
@@ -490,7 +498,9 @@ def _loop(config: Config, *, once: bool = False) -> int:
         now = time.monotonic()
         if now - last_heartbeat >= HEARTBEAT_SECONDS:
             try:
-                answer = backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
+                answer = backend.heartbeat(
+                    agent_version=VERSION, ssh_host=ssh_host(), task_id=holding
+                )
                 last_heartbeat = now
                 # Was fetched every sixty seconds and discarded. It is most of
                 # what the shop screen shows.
@@ -524,7 +534,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
             if time.monotonic() - last_heartbeat < HEARTBEAT_SECONDS:
                 return
             try:
-                backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host())
+                backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host(), task_id=holding)
                 last_heartbeat = time.monotonic()
                 note(connected=True)
             except Exception as exc:  # noqa: BLE001
@@ -539,6 +549,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
                 on_tick=beat,
                 health=health,
                 on_job=on_job,
+                on_hold=on_hold,
                 printer_fn=printing_fn,
             )
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the loop

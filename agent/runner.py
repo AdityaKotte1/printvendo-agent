@@ -54,6 +54,7 @@ def run_once(
     on_tick: Callable[[], None] | None = None,
     health: "PrinterHealth | None" = None,
     on_job: "Callable[[str | None, int | None], None] | None" = None,
+    on_hold: "Callable[[str | None], None] | None" = None,
 ) -> int:
     """Drain the queue for this device. Returns how many tasks were handled.
 
@@ -90,19 +91,36 @@ def run_once(
             _report(backend, task.task_id, "failed")
             continue
 
-        _do_one(
-            backend,
-            task,
-            printer=chosen,
-            workspace=workspace,
-            printer_fn=printer_fn,
-            on_tick=on_tick,
-            health=health,
-            on_job=on_job,
-        )
+        # Named to the server by the heartbeat for exactly as long as this
+        # machine has it, which renews its lease: a job waiting behind an empty
+        # tray is not lost, and must not be declared lost and handed out again.
+        _hold(on_hold, task.task_id)
+        try:
+            _do_one(
+                backend,
+                task,
+                printer=chosen,
+                workspace=workspace,
+                printer_fn=printer_fn,
+                on_tick=on_tick,
+                health=health,
+                on_job=on_job,
+            )
+        finally:
+            _hold(on_hold, None)
 
     log.info("stopping this pass at %s tasks; more are waiting", handled)
     return handled
+
+
+def _hold(on_hold, task_id: str | None) -> None:
+    """Say which job is in hand. A failure here must not stop a print."""
+    if on_hold is None:
+        return
+    try:
+        on_hold(task_id)
+    except Exception:  # noqa: BLE001
+        log.warning("could not record the job in hand", exc_info=True)
 
 
 def _do_commands(backend) -> None:

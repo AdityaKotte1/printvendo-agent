@@ -258,6 +258,33 @@ def windows_watcher(printer: str, ours: set[int]) -> Callable[[], JobState]:
     return _look
 
 
+def cancel_windows_jobs(printer: str, ids: set[int]) -> None:
+    """Take our own jobs back out of the spooler. Never raises.
+
+    A job left there after we gave up on it prints whenever the printer comes
+    back -- after the student was told it failed. Only ids we spooled are
+    touched; the job owner may always delete their own job.
+    """
+    if not ids:
+        return
+    import win32print
+
+    try:
+        handle = win32print.OpenPrinter(printer)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not open %s to remove jobs %s: %s", printer, sorted(ids), exc)
+        return
+    try:
+        for job_id in ids:
+            try:
+                win32print.SetJob(handle, job_id, 0, None, win32print.JOB_CONTROL_DELETE)
+                log.info("removed job %s from %s", job_id, printer)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not remove job %s from %s: %s", job_id, printer, exc)
+    finally:
+        win32print.ClosePrinter(handle)
+
+
 def queue_depth(printer: str) -> int:
     """How many jobs this machine already has in front of a new one.
 

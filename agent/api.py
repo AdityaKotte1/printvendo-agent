@@ -36,7 +36,11 @@ class Backend:
         return {"X-Device-Token": self.token}
 
     def heartbeat(
-        self, *, agent_version: str, ssh_host: str | None = None
+        self,
+        *,
+        agent_version: str,
+        ssh_host: str | None = None,
+        task_id: str | None = None,
     ) -> dict:
         """Say the machine is alive, and hear back what this shop looks like.
 
@@ -56,6 +60,10 @@ class Backend:
         # sending null would overwrite the last good name the server had.
         if ssh_host:
             body["ssh_host"] = ssh_host
+        # The job in hand, so the server renews its lease rather than deciding
+        # it is lost while it waits behind an empty tray. Absent when idle.
+        if task_id:
+            body["task_id"] = task_id
 
         response = self._client.post(
             f"{self.base_url}/v1/device/heartbeat",

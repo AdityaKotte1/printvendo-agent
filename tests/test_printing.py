@@ -5,6 +5,8 @@ depends on how a machine happens to be set up, which is where the surprises
 live.
 """
 
+import pytest
+
 # ── finding Ghostscript when PATH does not have it ──────────────────────────
 
 
@@ -48,3 +50,105 @@ def test_nothing_is_found_when_it_is_genuinely_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path))
 
     assert printing._ghostscript_in_program_files() is None
+
+
+# ── giving up on a job takes our copy back out of the Windows queue ─────────
+#
+# Left in the spooler, a job the printer stopped on prints whenever paper goes
+# in -- after the student was told it failed, and possibly refunded. One shop
+# printed a stack of jobs that way with no new orders anywhere.
+
+
+def _windows_job():
+    from agent.printing import Task
+
+    return Task.from_response(
+        {
+            "task_id": "tsk_w",
+            "document_id": "doc_w",
+            "filename": "tsk_w.pdf",
+            "page_count": 2,
+            "copies": 1,
+            "duplex": False,
+            "colour": False,
+            "page_range": None,
+            "expected_sheets": 2,
+        }
+    )
+
+
+def _windows_print(monkeypatch, outcome):
+    """Drive the Windows path with no Ghostscript and no spooler."""
+    import subprocess as sp
+
+    from agent import printing
+
+    cancelled: list = []
+    queue = iter([set(), {7}])
+    monkeypatch.setattr(printing, "IS_WINDOWS", True)
+    monkeypatch.setattr(printing, "build_command", lambda *a, **k: ["gs"])
+    monkeypatch.setattr(
+        printing.subprocess, "run", lambda *a, **k: sp.CompletedProcess(a, 0, "", "")
+    )
+    monkeypatch.setattr(printing, "windows_job_ids", lambda printer: next(queue))
+    monkeypatch.setattr(printing, "windows_watcher", lambda printer, ours: lambda: outcome)
+    monkeypatch.setattr(printing, "watch_job", lambda watch, **_: outcome)
+    monkeypatch.setattr(
+        printing,
+        "cancel_windows_jobs",
+        lambda printer, ids: cancelled.append((printer, set(ids))),
+    )
+    return cancelled
+
+
+def test_a_job_the_printer_stopped_on_is_taken_back_out_of_the_queue(
+    monkeypatch, tmp_path
+):
+    from agent.printing import PrinterStuck, print_task
+    from agent.waiting import JobState
+
+    cancelled = _windows_print(monkeypatch, JobState.ERROR)
+
+    with pytest.raises(PrinterStuck):
+        print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert cancelled == [("Shop", {7})]
+
+
+def test_a_job_that_never_started_is_taken_back_out_too(monkeypatch, tmp_path):
+    from agent.printing import PrinterStuck, print_task
+    from agent.waiting import JobState
+
+    cancelled = _windows_print(monkeypatch, JobState.QUEUED)
+
+    with pytest.raises(PrinterStuck):
+        print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert cancelled == [("Shop", {7})]
+
+
+def test_a_job_still_printing_when_the_wait_ends_is_left_to_finish(
+    monkeypatch, tmp_path
+):
+    """Still reported, but cutting it off would hand the student half a
+    document."""
+    from agent.printing import PrinterStuck, print_task
+    from agent.waiting import JobState
+
+    cancelled = _windows_print(monkeypatch, JobState.PRINTING)
+
+    with pytest.raises(PrinterStuck):
+        print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert cancelled == []
+
+
+def test_a_job_that_printed_is_not_touched(monkeypatch, tmp_path):
+    from agent.printing import print_task
+    from agent.waiting import JobState
+
+    cancelled = _windows_print(monkeypatch, JobState.GONE)
+
+    print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert cancelled == []
