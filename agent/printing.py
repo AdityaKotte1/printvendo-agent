@@ -175,6 +175,12 @@ def build_windows_command(
         "-sDEVICE=mswinpr2",
         f"-sOutputFile=%printer%{printer}",
         "-dPrinted",
+        # Without these `mswinpr2` uses the driver's default portrait page and
+        # a landscape PDF overflows it: the right half printed on a second
+        # sheet. Fixed A4 plus fit-to-page scales and rotates each page onto it.
+        "-sPAPERSIZE=a4",
+        "-dFIXEDMEDIA",
+        "-dPDFFitPage",
     ]
 
     # Copies, twice over, and deliberately: which of the two a Windows driver

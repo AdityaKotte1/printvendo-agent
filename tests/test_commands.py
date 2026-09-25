@@ -131,6 +131,16 @@ def test_windows_expands_a_page_range_for_ghostscript():
     assert "4,5,6" in command("windows", page_range="4-6")
 
 
+def test_windows_fits_every_page_to_a4_so_landscape_is_not_split_across_sheets():
+    """`mswinpr2` otherwise prints on the driver's default portrait page and a
+    landscape PDF's right half lands on a second sheet."""
+    built = command("windows")
+
+    assert "-sPAPERSIZE=a4" in built
+    assert "-dFIXEDMEDIA" in built
+    assert "-dPDFFitPage" in built
+
+
 def test_windows_runs_ghostscript_under_safer():
     """The same rule the backend's PDF pipeline follows: a PDF is somebody
     else's file, and Ghostscript will execute what is in it if allowed to."""
