@@ -340,6 +340,36 @@ def test_updating_installs_from_a_url_rather_than_a_checkout(monkeypatch):
     assert "updating" in said
 
 
+@pytest.mark.parametrize("windows", [True, False])
+def test_updating_replaces_the_files_even_when_the_version_is_unchanged(monkeypatch, windows):
+    """pip skips an archive URL whose version matches the installed one, so a
+    plain --upgrade did nothing on a release nobody remembered to bump."""
+    from agent import commands as mod
+
+    sent = []
+    monkeypatch.setattr(mod, "_detach", lambda cmd: sent.append(cmd))
+    monkeypatch.setattr(mod, "IS_WINDOWS", windows)
+
+    mod.update_agent()
+
+    script = " ".join(sent[0])
+    assert "--force-reinstall" in script and "--no-deps" in script
+
+
+def test_the_reported_version_is_the_one_pyproject_installs():
+    """The console judges an update by the version in the heartbeat. Two copies
+    of the number that can drift means a good update reads as a failed one."""
+    import tomllib
+    from pathlib import Path
+
+    from agent.__main__ import VERSION
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+
+    assert VERSION == declared
+
+
 def test_updating_restarts_afterwards(monkeypatch):
     """Installing without restarting leaves the new code on disk and the old
     code in memory -- which is how a token rotation locked two shops out, and

@@ -203,24 +203,40 @@ def update_agent() -> str:
     fails silently leaves an operator with a shop that did not come back and
     nothing to read.
     """
-    installer = [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", UPDATE_SOURCE]
+    # Two installs, both needed. pip treats an archive URL whose version matches
+    # the installed one as already satisfied, so a plain --upgrade is a silent
+    # no-op unless somebody remembered to bump the version -- found by running
+    # it. --force-reinstall --no-deps replaces our own files regardless, and
+    # works while the agent's .exe is running (pip renames it aside). The first
+    # install exists so a release that adds a dependency still gets it.
+    pip = [sys.executable, "-m", "pip", "install", "--quiet"]
+    installers = [
+        [*pip, "--upgrade", UPDATE_SOURCE],
+        [*pip, "--force-reinstall", "--no-deps", UPDATE_SOURCE],
+    ]
 
     if IS_WINDOWS:
-        quoted = " ".join(f"'{part}'" for part in installer)
+        steps = "; ".join(
+            "& " + " ".join(f"'{part}'" for part in installer) + f" *>> '{UPDATE_LOG}'"
+            for installer in installers
+        )
         _detach([
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
-            f"& {quoted} *>> '{UPDATE_LOG}'; "
+            f"{steps}; "
             f"Stop-ScheduledTask -TaskName {WINDOWS_AGENT_TASK}; "
             f"Start-Sleep -Seconds 2; "
             f"Start-ScheduledTask -TaskName {WINDOWS_AGENT_TASK}",
         ])
         return f"updating from {UPDATE_SOURCE}, then restarting"
 
-    joined = " ".join(shlex.quote(part) for part in installer)
+    log_file = shlex.quote(str(UPDATE_LOG))
+    steps = "; ".join(
+        " ".join(shlex.quote(part) for part in installer) + f" >> {log_file} 2>&1"
+        for installer in installers
+    )
     _detach([
         "sh", "-c",
-        f"{joined} >> {shlex.quote(str(UPDATE_LOG))} 2>&1; "
-        f"systemctl restart {LINUX_AGENT_UNIT} >> {shlex.quote(str(UPDATE_LOG))} 2>&1",
+        f"{steps}; systemctl restart {LINUX_AGENT_UNIT} >> {log_file} 2>&1",
     ])
     return f"updating from {UPDATE_SOURCE}, then restarting"
 
