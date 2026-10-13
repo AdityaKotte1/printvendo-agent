@@ -101,6 +101,36 @@ def _windows_print(monkeypatch, outcome):
     return cancelled
 
 
+def test_a_big_job_is_allowed_longer_to_print_than_a_small_one():
+    """Fifteen minutes is generous for a letter and far too short for a thesis
+    on an inkjet. The allowance follows the server's sheet count."""
+    from agent.printing import printing_allowance
+    from agent.waiting import DEFAULT_TIMEOUT
+
+    assert printing_allowance(1) == DEFAULT_TIMEOUT
+    assert printing_allowance(28) > DEFAULT_TIMEOUT
+    assert printing_allowance(56) > printing_allowance(28)
+
+
+def test_the_allowance_reaches_the_wait(monkeypatch, tmp_path):
+    from agent import printing
+    from agent.printing import print_task, printing_allowance
+    from agent.waiting import JobState
+
+    _windows_print(monkeypatch, JobState.GONE)
+    seen: dict = {}
+
+    def watch(_look, **kwargs):
+        seen.update(kwargs)
+        return JobState.GONE
+
+    monkeypatch.setattr(printing, "watch_job", watch)
+
+    print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert seen["printing_timeout"] == printing_allowance(2)
+
+
 def test_a_job_the_printer_stopped_on_is_taken_back_out_of_the_queue(
     monkeypatch, tmp_path
 ):

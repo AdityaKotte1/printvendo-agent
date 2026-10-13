@@ -192,6 +192,44 @@ def test_a_job_that_never_finishes_ends_as_still_queued():
     assert outcome is JobState.QUEUED
 
 
+def paced(states, *, every: float):
+    """Each state lasts `every` seconds of wall clock, then the next."""
+    import time
+
+    start = time.monotonic()
+
+    def _look() -> JobState:
+        index = int((time.monotonic() - start) / every)
+        return states[index] if index < len(states) else JobState.GONE
+
+    return _look
+
+
+def test_the_clock_restarts_when_the_printer_takes_the_job():
+    """A job that waited its turn and then printed for longer than the queue
+    allowance is a slow printer, not a stuck one. An Epson L6460 ran past
+    fifteen minutes on a long duplex job; the agent called it stuck, reported
+    it failed and closed the shop while the paper was still coming out."""
+    outcome = watch_job(
+        paced([JobState.QUEUED, JobState.PRINTING, JobState.PRINTING], every=0.1),
+        timeout=0.15,
+        printing_timeout=5,
+        interval=0.01,
+    )
+
+    assert outcome is JobState.GONE
+
+
+def test_a_job_printing_past_its_allowance_still_ends_unfinished():
+    """The allowance is longer, never unlimited: a printer that says "printing"
+    for ever has still not printed anything."""
+    outcome = watch_job(
+        lambda: JobState.PRINTING, timeout=5, printing_timeout=0.05, interval=0.01
+    )
+
+    assert outcome is JobState.PRINTING
+
+
 def test_an_error_stops_the_wait_immediately():
     """There is nothing to wait for. The student should be told now, not in
     fifteen minutes."""

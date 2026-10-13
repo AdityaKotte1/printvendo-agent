@@ -164,10 +164,18 @@ def watch_job(
     *,
     on_state: Callable[[JobState], None] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
+    printing_timeout: float | None = None,
     interval: float = DEFAULT_INTERVAL,
     on_tick: Callable[[], None] | None = None,
 ) -> JobState:
     """Follow a job until it is gone, has failed, or we stop believing in it.
+
+    **Two clocks.** `timeout` covers waiting for the printer to take the job;
+    `printing_timeout` starts again the moment it does. One clock covering both
+    called a slow printer stuck: an Epson inkjet ran past fifteen minutes on a
+    long duplex job, and the agent reported it failed and closed the shop while
+    the paper was still coming out. A printer that stops is not what this
+    clock is for -- that is ERROR, and it ends the wait at once.
 
     `on_state` is called **when the state changes**, never on every look: a
     two-hundred-page job would otherwise post "printing" every two seconds for
@@ -190,6 +198,10 @@ def watch_job(
             log.warning("could not read the print queue: %s", exc)
         else:
             if current is not last:
+                if current is JobState.PRINTING:
+                    deadline = time.monotonic() + (
+                        timeout if printing_timeout is None else printing_timeout
+                    )
                 last = current
                 if on_state is not None:
                     on_state(current)

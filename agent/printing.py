@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent.waiting import (
+    DEFAULT_TIMEOUT,
     JobState,
     cancel_windows_jobs,
     cups_job_id,
@@ -44,6 +45,23 @@ IS_WINDOWS = platform.system() == "Windows"
 # fallback list for the same reason: one config file has to work on a
 # developer's laptop and on the machine at a shop.
 GHOSTSCRIPT_NAMES = ("gswin64c", "gswin32c", "gs")
+
+# How long one sheet may take once the printer has the job. Slow on purpose:
+# an inkjet printing photos on both sides pauses for the ink to dry before it
+# turns the sheet, and a false "stuck" fails a print that is coming out and
+# closes the shop. A printer that actually stops says so, and that ends the
+# wait at once rather than here.
+SECONDS_PER_SHEET = 120
+
+
+def printing_allowance(expected_sheets: int) -> float:
+    """How long a job may print before the agent stops believing in it.
+
+    Never less than the old fixed fifteen minutes, which is right for a short
+    job, and longer in proportion to the server's own sheet count -- the one
+    figure that already includes copies and duplex.
+    """
+    return max(DEFAULT_TIMEOUT, expected_sheets * SECONDS_PER_SHEET)
 
 
 @dataclass(frozen=True)
@@ -398,7 +416,12 @@ def _print_raw(
 
     ours = windows_job_ids(printer) - before
     watch = windows_watcher(printer, ours)
-    outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
+    outcome = watch_job(
+        watch,
+        on_state=on_state,
+        on_tick=on_tick,
+        printing_timeout=printing_allowance(task.expected_sheets),
+    )
 
     _judge(printer, ours, outcome)
 
@@ -522,7 +545,12 @@ def print_task(
         # and `cups_job_id` raises rather than letting the agent guess.
         watch = cups_watcher(cups_job_id(result.stdout), printer)
 
-    outcome = watch_job(watch, on_state=on_state, on_tick=on_tick)
+    outcome = watch_job(
+        watch,
+        on_state=on_state,
+        on_tick=on_tick,
+        printing_timeout=printing_allowance(task.expected_sheets),
+    )
 
     _judge(printer, ours, outcome)
 
