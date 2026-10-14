@@ -35,11 +35,11 @@ from agent.config import (
     printers,
     ssh_host,
 )
-from agent.pools import pick, pool_for
+from agent.pools import machine_for
 from agent.printing import IS_WINDOWS, ghostscript_path, print_task
 from agent.runner import PrinterHealth, run_once
 from agent.single import AlreadyRunning, only_one_agent
-from agent.waiting import queue_depth
+from agent.waiting import printer_out_of_paper, queue_depth
 
 # Reported on every heartbeat and shown against the kiosk in the console, which
 # makes it the only way to tell from a desk which build a shop is running.
@@ -47,7 +47,7 @@ from agent.waiting import queue_depth
 # one that fixed an agent locking itself out of its own kiosk -- so "is the new
 # version deployed?" could only be answered by SSHing in. Bump it whenever this
 # package changes, or the field is worse than absent: it looks like an answer.
-VERSION = "1.9.1"
+VERSION = "1.10.0"
 
 # How often to ask when nothing has woken us. The socket makes a queued job
 # prompt; this is the floor, and it is what kept every kiosk working before the
@@ -94,7 +94,25 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser(
         "test-raw", help="print one page the PCL way, to see whether it works here"
     )
-    commands.add_parser("printers", help="list the printers this machine can see")
+    listing = commands.add_parser(
+        "printers", help="list, or set which machine prints what"
+    )
+    listing.add_argument(
+        "--bw",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="a printer for black-and-white work; repeat for more than one",
+    )
+    listing.add_argument(
+        "--colour",
+        "--color",
+        action="append",
+        default=None,
+        dest="colour",
+        metavar="NAME",
+        help="a printer for colour work; repeat for more than one",
+    )
 
     raw = commands.add_parser(
         "raw", help="print by rendering to PCL rather than through the driver"
@@ -110,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     _start_logging()
 
     if args.command == "printers":
+        if args.bw or args.colour:
+            return _set_pools(args.bw or [], args.colour or [])
         return _list_printers()
     if args.command == "enrol":
         return _enrol(args)
@@ -162,6 +182,45 @@ def _start_logging() -> None:
 
     if len(handlers) == 1:
         log.warning("could not open %s; logging to the console only", log_path())
+
+
+def _set_pools(bw: list[str], colour: list[str]) -> int:
+    """Say which machine prints what, without re-enrolling.
+
+    Two printers used to mean running the whole enrolment again with --bw and
+    --colour, which meant minting a code and replacing a working token just to
+    change a list of names. These names are also what the server keeps a paper
+    tray for, so the next heartbeat announces them.
+    """
+    config = Config.load()
+    found = printers()
+
+    missing = [name for name in (*bw, *colour) if name not in found]
+    if missing:
+        print("This machine has no printer called: " + ", ".join(missing))
+        print("What it does have:")
+        for name in found:
+            print(f"  {name}")
+        return 1
+
+    config.printers_bw = list(bw)
+    config.printers_colour = list(colour)
+    # The single printer stays as the fallback for anything that asks without
+    # knowing about pools, and so an operator can drop back to one machine by
+    # clearing the pools alone.
+    config.printer = config.printer or (bw or colour)[0]
+    written = config.save()
+
+    print("Mono:   " + (", ".join(bw) or "none"))
+    print("Colour: " + (", ".join(colour) or "none"))
+    print(f"Saved to {written}")
+    print("")
+    print("The next heartbeat tells the server, which keeps a paper tray per")
+    print("machine. Set how much paper is in each one in the admin console.")
+    print("Restart the agent for this to take effect:")
+    print("  Stop-ScheduledTask -TaskName PrintvendoAgent   (Windows)")
+    print("  sudo systemctl restart printvendo-agent        (Linux)")
+    return 0
 
 
 def _list_printers() -> int:
@@ -474,7 +533,13 @@ def _loop(config: Config, *, once: bool = False) -> int:
         by a re-enrol is picked up on the next job rather than at the next
         restart.
         """
-        return pick(pool_for(config.pools, colour=task.colour), queue_depth)
+        return machine_for(
+            task.printer,
+            pools=config.pools,
+            colour=task.colour,
+            available=printers(),
+            queue_depth=queue_depth,
+        )
 
     # How this machine prints, decided once rather than per job. `raw_printing`
     # is the PCL path; without it, Ghostscript's `mswinpr2`, which is what needs
@@ -499,7 +564,10 @@ def _loop(config: Config, *, once: bool = False) -> int:
         if now - last_heartbeat >= HEARTBEAT_SECONDS:
             try:
                 answer = backend.heartbeat(
-                    agent_version=VERSION, ssh_host=ssh_host(), task_id=holding
+                    agent_version=VERSION,
+                    ssh_host=ssh_host(),
+                    task_id=holding,
+                    printers=config.announced_printers(),
                 )
                 last_heartbeat = now
                 # Was fetched every sixty seconds and discarded. It is most of
@@ -521,7 +589,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
                 # should show its real paper count, greyed -- not a blank.
                 note(connected=False)
 
-        def beat(backend: Backend = backend) -> None:
+        def beat(backend: Backend = backend, config: Config = config) -> None:
             """Called while the printer works, so a long job does not make this
             machine look offline.
 
@@ -534,7 +602,12 @@ def _loop(config: Config, *, once: bool = False) -> int:
             if time.monotonic() - last_heartbeat < HEARTBEAT_SECONDS:
                 return
             try:
-                backend.heartbeat(agent_version=VERSION, ssh_host=ssh_host(), task_id=holding)
+                backend.heartbeat(
+                    agent_version=VERSION,
+                    ssh_host=ssh_host(),
+                    task_id=holding,
+                    printers=config.announced_printers(),
+                )
                 last_heartbeat = time.monotonic()
                 note(connected=True)
             except Exception as exc:  # noqa: BLE001
@@ -550,6 +623,7 @@ def _loop(config: Config, *, once: bool = False) -> int:
                 health=health,
                 on_job=on_job,
                 on_hold=on_hold,
+                out_of_paper=printer_out_of_paper,
                 printer_fn=printing_fn,
             )
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the loop

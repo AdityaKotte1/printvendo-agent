@@ -19,8 +19,11 @@ owner listed them, which makes a single-printer pool deterministic and lets an
 owner say which machine they would rather wear out first.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+
+log = logging.getLogger("agent")
 
 
 @dataclass(frozen=True)
@@ -78,3 +81,41 @@ def pick(pool: list[str], depth_of: Callable[[str], int]) -> str | None:
         return (depth, pool.index(name))
 
     return min(pool, key=weight)
+
+
+def machine_for(
+    task_printer: str,
+    *,
+    pools: Pools,
+    colour: bool,
+    available: list[str],
+    queue_depth: Callable[[str], int],
+) -> str | None:
+    """The machine this job prints on, or None if this box cannot.
+
+    **The server decides when it names one.** A shop with two printers has a
+    tray each, and only the server knows what is in them -- so it picks a
+    machine that can finish the job, and the sheets then come off the tray that
+    printed them. All this box does is check the name is a machine it actually
+    has: printing somewhere else would spend the wrong tray's paper and leave
+    the server's count pointing at a printer that never ran.
+
+    A name that matches nothing is a configuration mistake -- a printer renamed
+    in the operating system, a tray named by hand with a typo -- and is worth
+    one failed job and a line in the log, rather than quietly printing on
+    whatever else is here.
+
+    With no name, the pools decide exactly as before: a one-printer kiosk, or a
+    server too old to choose.
+    """
+    if task_printer:
+        if task_printer in available:
+            return task_printer
+        log.error(
+            "the server chose %r, which this machine does not have: %s",
+            task_printer,
+            ", ".join(available) or "no printers at all",
+        )
+        return None
+
+    return pick(pool_for(pools, colour=colour), queue_depth)

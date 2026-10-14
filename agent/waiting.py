@@ -381,3 +381,62 @@ def wait_until_idle(
             log.warning("%s did not go idle within %ss; sending the next job", printer, timeout)
             return False
         time.sleep(interval)
+
+
+# What a printer with an empty tray says about itself. Words rather than codes
+# on CUPS, because words are what `lpstat` gives -- and they are what a person
+# at the counter reads too.
+PAPER_WORDS = (
+    "out of paper",
+    "media-empty",
+    "media-needed",
+    "paper out",
+    "load paper",
+    "tray empty",
+)
+
+
+def printer_out_of_paper(printer: str) -> bool:
+    """Whether the machine says it has no paper. Never raises.
+
+    Asked when a job will not come out, to tell paper apart from a jam: a jam
+    closes the shop, because everything after it would be paid for and never
+    arrive, while paper empties one tray and leaves the shop's other machine
+    selling.
+
+    False when it cannot be read: claiming a tray is empty on no evidence would
+    stop work going to a machine that is working.
+    """
+    from agent.printing import IS_WINDOWS
+
+    try:
+        if IS_WINDOWS:
+            return _windows_out_of_paper(printer)
+        return _cups_out_of_paper(printer)
+    except Exception as exc:  # noqa: BLE001 - a diagnosis, never a failure
+        log.warning("could not read the state of %s: %s", printer, exc)
+        return False
+
+
+def _cups_out_of_paper(printer: str) -> bool:
+    result = subprocess.run(
+        ["lpstat", "-p", printer, "-l"], capture_output=True, text=True, timeout=30
+    )
+    said = f"{result.stdout} {result.stderr}".lower()
+    return any(word in said for word in PAPER_WORDS)
+
+
+def _windows_out_of_paper(printer: str) -> bool:
+    import win32print
+
+    handle = win32print.OpenPrinter(printer)
+    try:
+        status = win32print.GetPrinter(handle, 2).get("Status", 0)
+    finally:
+        win32print.ClosePrinter(handle)
+
+    # The spooler has a flag for exactly this, and another for "the tray it
+    # wants is not loaded" -- both are somebody walking over with a ream.
+    paper_out = getattr(win32print, "PRINTER_STATUS_PAPER_OUT", 0x00000010)
+    paper_problem = getattr(win32print, "PRINTER_STATUS_PAPER_PROBLEM", 0x00000040)
+    return bool(status & (paper_out | paper_problem))

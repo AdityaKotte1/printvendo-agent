@@ -95,3 +95,56 @@ def test_a_printer_whose_queue_cannot_be_read_is_passed_over():
 def test_an_empty_pool_chooses_nothing():
     """The caller refuses the job rather than inventing a machine for it."""
     assert pick([], idle) is None
+
+
+# ── the server picks the machine when it knows the trays ───────────────────
+#
+# A shop with two printers has a tray each, and only the server knows what is
+# in them -- so it names the machine. The agent checks the name is one this box
+# actually has: a name matching nothing is a configuration mistake worth
+# reporting, not a reason to print somewhere else and hope.
+
+
+def test_the_machine_the_server_named_is_used():
+    from agent.pools import Pools, machine_for
+
+    chosen = machine_for(
+        "EPSON L6460",
+        pools=Pools(bw=["HP LaserJet"], colour=["EPSON L6460"]),
+        colour=False,
+        available=["HP LaserJet", "EPSON L6460"],
+        queue_depth=lambda name: 0,
+    )
+
+    assert chosen == "EPSON L6460"
+
+
+def test_a_machine_this_box_does_not_have_is_refused():
+    """Printing it elsewhere would spend the wrong tray's paper and leave the
+    server's count pointing at a machine that never printed it."""
+    from agent.pools import Pools, machine_for
+
+    chosen = machine_for(
+        "Printer That Moved",
+        pools=Pools(bw=["HP LaserJet"], colour=[]),
+        colour=False,
+        available=["HP LaserJet"],
+        queue_depth=lambda name: 0,
+    )
+
+    assert chosen is None
+
+
+def test_without_a_named_machine_the_pools_decide():
+    """A one-printer kiosk, or a server too old to name one."""
+    from agent.pools import Pools, machine_for
+
+    chosen = machine_for(
+        "",
+        pools=Pools(bw=["HP LaserJet"], colour=["EPSON L6460"]),
+        colour=True,
+        available=["HP LaserJet", "EPSON L6460"],
+        queue_depth=lambda name: 0,
+    )
+
+    assert chosen == "EPSON L6460"

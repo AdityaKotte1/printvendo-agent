@@ -142,3 +142,48 @@ def test_a_version_that_is_not_known_is_absent_rather_than_guessed():
     doc = document(Snapshot(), now=NOW)
 
     assert doc["agent_version"] is None
+
+
+# ── what this machine tells the server it has ──────────────────────────────
+
+
+def test_the_pools_are_what_is_announced():
+    from agent.config import Config
+
+    config = Config(
+        printers_bw=["HP LaserJet"], printers_colour=["EPSON L6460"], printer="HP LaserJet"
+    )
+
+    announced = config.announced_printers()
+
+    assert announced == [
+        {"name": "EPSON L6460", "colour": True},
+        {"name": "HP LaserJet", "colour": False},
+    ]
+
+
+def test_a_shop_with_one_machine_announces_it():
+    """Nearly every kiosk in the field. It is announced as colour-capable
+    because that is what its tray already says on the server; whether colour is
+    *offered* is a separate switch an operator owns."""
+    from agent.config import Config
+
+    config = Config(printer="EPSON L6460")
+
+    assert config.announced_printers() == [{"name": "EPSON L6460", "colour": True}]
+
+
+def test_a_machine_with_nothing_configured_announces_nothing():
+    from agent.config import Config
+
+    assert Config().announced_printers() == []
+
+
+def test_a_printer_in_both_pools_is_announced_once_as_colour():
+    """An owner who listed the colour machine in both pools -- mono work may use
+    it -- must not create two trays for one machine."""
+    from agent.config import Config
+
+    config = Config(printers_bw=["EPSON L6460"], printers_colour=["EPSON L6460"])
+
+    assert config.announced_printers() == [{"name": "EPSON L6460", "colour": True}]

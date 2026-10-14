@@ -83,6 +83,10 @@ class Task:
     colour: bool
     page_range: str | None
     expected_sheets: int
+    # The machine the server chose, where a shop has more than one tray. The
+    # server knows what is in each; this box only knows what it is plugged
+    # into. Empty at a one-printer kiosk, and from a server too old to say.
+    printer: str = ""
 
     @classmethod
     def from_response(cls, body: dict) -> "Task":
@@ -96,6 +100,7 @@ class Task:
             colour=bool(body.get("colour", False)),
             page_range=body.get("page_range"),
             expected_sheets=int(body.get("expected_sheets", 0)),
+            printer=body.get("printer") or "",
         )
 
 

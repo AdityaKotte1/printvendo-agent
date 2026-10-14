@@ -55,6 +55,7 @@ def run_once(
     health: "PrinterHealth | None" = None,
     on_job: "Callable[[str | None, int | None], None] | None" = None,
     on_hold: "Callable[[str | None], None] | None" = None,
+    out_of_paper: "Callable[[str], bool] | None" = None,
 ) -> int:
     """Drain the queue for this device. Returns how many tasks were handled.
 
@@ -105,6 +106,7 @@ def run_once(
                 on_tick=on_tick,
                 health=health,
                 on_job=on_job,
+                out_of_paper=out_of_paper,
             )
         finally:
             _hold(on_hold, None)
@@ -185,6 +187,7 @@ def _do_one(
     on_tick: Callable[[], None] | None = None,
     health: "PrinterHealth | None" = None,
     on_job: "Callable[[str | None, int | None], None] | None" = None,
+    out_of_paper: "Callable[[str], bool] | None" = None,
 ) -> None:
     """One task, from file to report. Never raises: the next student is waiting.
 
@@ -237,11 +240,19 @@ def _do_one(
                 on_state=announce,
             )
         except PrinterStuck as exc:
-            # The shop is broken, not the file. Close it: every student after
-            # this one would pay for a print that is not coming out.
             log.error("the printer is stuck on %s: %s", task.task_id, exc)
             _report(backend, task.task_id, "failed")
-            if health is not None:
+
+            # Paper or a jam -- and the difference decides whether the shop
+            # closes. A machine out of paper empties one tray on the server,
+            # which stops routing work to it while the shop's other machine
+            # keeps selling; closing the shop would take a working printer off
+            # the estate. Anything else is broken, and every student after this
+            # one would pay for a print that is not coming out.
+            if out_of_paper is not None and out_of_paper(printer):
+                log.warning("%s is out of paper", printer)
+                _tell_paper(backend, printer)
+            elif health is not None:
                 health.jammed(backend, str(exc))
             announce_job(None)
             return
@@ -264,6 +275,19 @@ def _do_one(
             health.cleared(backend)
 
         announce_job(None)
+
+
+def _tell_paper(backend, printer: str) -> None:
+    """Say which printer is out of paper. Never the failure itself.
+
+    The job has already been reported failed by the time this runs, so a
+    provider or network problem here must not turn one empty tray into an
+    exception that stops the pass.
+    """
+    try:
+        backend.report_printer_paper(printer=printer, out_of_paper=True)
+    except Exception as exc:  # noqa: BLE001
+        log.error("could not report %s out of paper: %s", printer, exc)
 
 
 def _report(backend, task_id: str, state: str, *, sheets_used: int | None = None) -> None:

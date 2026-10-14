@@ -41,6 +41,7 @@ class Backend:
         agent_version: str,
         ssh_host: str | None = None,
         task_id: str | None = None,
+        printers: list[dict] | None = None,
     ) -> dict:
         """Say the machine is alive, and hear back what this shop looks like.
 
@@ -64,6 +65,11 @@ class Backend:
         # it is lost while it waits behind an empty tray. Absent when idle.
         if task_id:
             body["task_id"] = task_id
+        # The machines this box has, so the server can keep a tray for each.
+        # Omitted when there is nothing to say, which leaves the server's
+        # trays exactly as they are.
+        if printers:
+            body["printers"] = printers
 
         response = self._client.post(
             f"{self.base_url}/v1/device/heartbeat",
@@ -163,6 +169,23 @@ class Backend:
             f"{self.base_url}/v1/device/commands/{command_id}/result",
             headers=self._headers,
             json={"succeeded": succeeded, "error_message": error_message},
+        )
+        response.raise_for_status()
+
+    def report_printer_paper(self, *, printer: str, out_of_paper: bool) -> None:
+        """Say that one printer has run out of paper.
+
+        Named, because a shop may have two machines and one of them running dry
+        is not the shop running dry: the server empties that tray, stops routing
+        work to it, and tells whoever refills it which machine to walk to.
+
+        Refilling is deliberately not reported from here. A printer can tell
+        that paper ran out; how much somebody then put in is a person's word.
+        """
+        response = self._client.post(
+            f"{self.base_url}/v1/device/printer-paper",
+            headers=self._headers,
+            json={"printer": printer, "out_of_paper": out_of_paper},
         )
         response.raise_for_status()
 

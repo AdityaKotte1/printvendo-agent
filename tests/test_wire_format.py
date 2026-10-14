@@ -320,3 +320,44 @@ def test_an_idle_heartbeat_names_no_job(sent):
     _backend(client).heartbeat(agent_version="1.9.0", task_id=None)
 
     assert "task_id" not in seen[0]["body"]
+
+
+# ── the machines this box has ───────────────────────────────────────────────
+
+
+def test_a_heartbeat_can_announce_the_printers(sent):
+    """Configured once, on the machine that has them. The server keeps a tray
+    per printer and only needs to be told what exists."""
+    seen, client = sent
+
+    _backend(client).heartbeat(
+        agent_version="1.10.0",
+        printers=[
+            {"name": "HP LaserJet", "colour": False},
+            {"name": "EPSON L6460", "colour": True},
+        ],
+    )
+
+    assert seen[0]["body"]["printers"] == [
+        {"name": "HP LaserJet", "colour": False},
+        {"name": "EPSON L6460", "colour": True},
+    ]
+
+
+def test_a_heartbeat_with_nothing_to_announce_sends_no_printers(sent):
+    """An older shop with one machine and no pools sends none, and the server
+    leaves its tray alone."""
+    seen, client = sent
+
+    _backend(client).heartbeat(agent_version="1.10.0", printers=[])
+
+    assert "printers" not in seen[0]["body"]
+
+
+def test_a_printer_out_of_paper_is_reported_by_name(sent):
+    seen, client = sent
+
+    _backend(client).report_printer_paper(printer="HP LaserJet", out_of_paper=True)
+
+    assert seen[0]["path"] == "/v1/device/printer-paper"
+    assert seen[0]["body"] == {"printer": "HP LaserJet", "out_of_paper": True}

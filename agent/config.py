@@ -136,6 +136,35 @@ class Config:
             fallback=self.printer,
         )
 
+    def announced_printers(self) -> list[dict]:
+        """The machines this box has, for the server to keep a tray for each.
+
+        Sent on the heartbeat so two printers are configured once, here, where
+        somebody has already had to name them -- rather than typed again into a
+        console, where a typo makes a tray that matches no printer and a count
+        nobody is keeping.
+
+        Colour capability comes from the pools, because that is where an owner
+        already says which machine prints colour. A machine listed in both
+        pools is announced once, as colour: it is one machine, and mono work is
+        welcome on it.
+
+        A shop with one machine and no pools announces it as colour-capable,
+        which is what its tray already says on the server. Whether colour is
+        *offered* is a separate switch an operator owns.
+        """
+        if self.pools.configured:
+            seen: dict[str, bool] = {}
+            for name in self.printers_colour:
+                if name:
+                    seen[name] = True
+            for name in self.printers_bw:
+                if name:
+                    seen.setdefault(name, False)
+            return [{"name": name, "colour": colour} for name, colour in seen.items()]
+
+        return [{"name": self.printer, "colour": True}] if self.printer else []
+
 
 def printers() -> list[str]:
     """Every printer this machine can see, in the platform's own words."""

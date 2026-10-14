@@ -376,3 +376,64 @@ def test_a_failed_job_is_forgotten_too(tmp_path):
     )
 
     assert held == ["tsk_1", None]
+
+
+# ── a printer out of paper is not a broken shop ────────────────────────────
+#
+# A stuck printer closes the shop, because every job after it would be paid for
+# and never come out. Paper is different, and at a shop with two machines it is
+# very different: the server empties that tray and stops routing work to it,
+# while the other machine keeps selling. Closing the whole shop because one
+# tray ran dry would take a working printer off the estate.
+
+
+class PaperBackend(FakeBackend):
+    def __init__(self, tasks=None):
+        super().__init__(tasks)
+        self.paper: list[tuple[str, bool]] = []
+        self.health: list[tuple[bool, str | None]] = []
+
+    def report_printer_paper(self, *, printer: str, out_of_paper: bool) -> None:
+        self.paper.append((printer, out_of_paper))
+
+    def report_printer_health(self, *, stuck: bool, detail: str | None = None) -> None:
+        self.health.append((stuck, detail))
+
+
+def _stuck_printer(task, *, file_path, printer, on_state=None, **_):
+    from agent.printing import PrinterStuck
+
+    raise PrinterStuck("the printer stopped on this job")
+
+
+def test_a_printer_out_of_paper_is_reported_and_the_shop_stays_open(tmp_path):
+    backend = PaperBackend([a_task("tsk_1")])
+
+    run_once(
+        backend,
+        printer="HP LaserJet",
+        workspace=tmp_path,
+        printer_fn=_stuck_printer,
+        out_of_paper=lambda name: True,
+    )
+
+    assert backend.paper == [("HP LaserJet", True)]
+    assert backend.health == []
+    assert backend.reports == [("tsk_1", "failed", None)]
+
+
+def test_a_jam_still_closes_the_shop(tmp_path):
+    """Nothing about paper, so every job after this one would be paid for and
+    never come out."""
+    backend = PaperBackend([a_task("tsk_1")])
+
+    run_once(
+        backend,
+        printer="HP LaserJet",
+        workspace=tmp_path,
+        printer_fn=_stuck_printer,
+        out_of_paper=lambda name: False,
+    )
+
+    assert backend.paper == []
+    assert [stuck for stuck, _ in backend.health] == [True]
