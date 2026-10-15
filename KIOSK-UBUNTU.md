@@ -16,6 +16,50 @@ AC returns -> firmware powers the PC on -> Ubuntu boots -> autologin (openbox)
            -> Chromium shows http://127.0.0.1:8765, relaunched if it dies
 ```
 
+## What you need in hand
+
+- The thin client, a monitor, a keyboard, and a USB stick (4GB+).
+- The shop's LAN cable, and the captive portal username and password.
+- The printer(s), with a USB cable each.
+- An enrolment code for this kiosk from the admin console (single use, valid 12
+  hours) -- mint it when you reach step 5, not before.
+- Another machine to SSH from.
+
+## Installing the operating system
+
+**Ubuntu Server 24.04 LTS**, not Ubuntu Desktop. A thin client has a few GB of
+flash and 2-4GB of RAM; GNOME spends most of both on a machine whose entire job
+is one browser window. The desktop parts this build needs -- an X server,
+openbox, a display manager -- are four packages, installed below.
+
+1. Write the ISO to the USB stick (Raspberry Pi Imager, Rufus or
+   `dd` all do it).
+2. Boot the thin client from USB -- `F9` on HP for the boot menu.
+3. Through the installer: pick the whole internal disk, no LVM encryption (a
+   kiosk that boots unattended cannot be asked for a passphrase), create your
+   user, and **tick "Install OpenSSH server"**. Skip every snap it offers.
+4. Reboot, pull the USB stick, and log in once at the console.
+
+Debian 12 is a slightly lighter alternative and ships Chromium as a real
+package rather than a snap; everything below works on it unchanged except that
+`snap install chromium` becomes `apt-get install -y chromium`.
+
+## Everything this kiosk installs
+
+One line, so there is nothing to discover later:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y   openssh-server curl git ca-certificates   python3 python3-pip python3-venv   cups ghostscript   xserver-xorg xinit x11-xserver-utils openbox lightdm unclutter   snapd dmidecode
+sudo snap install chromium
+```
+
+What each group is for: SSH and curl are how you work on it and how the portal
+is logged in to; python runs the agent; CUPS and Ghostscript are printing; the
+X server, openbox and LightDM are the shop screen and nothing else; `unclutter`
+hides the mouse pointer; `dmidecode` names the board when you are looking for
+its firmware menu.
+
 ## 0. Before you start
 
 SSH is how you get back in once the login screen is gone. Set it up first.
