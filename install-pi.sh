@@ -101,14 +101,18 @@ lpstat -e | sed 's/^/    /'
 # The agent cannot tell them apart, reports the job printed, and the student is
 # charged for paper that never moved. That was set on three live kiosks and
 # seventy-four jobs were reported printed while the shop produced nothing.
-if [[ -n "${PRINTER}" ]]; then
-  CURRENT=$(lpoptions -p "$PRINTER" 2>/dev/null | tr ' ' '
+#
+# Every printer this agent will use, not just --printer: a shop with two
+# machines has two queues, and the one left on abort-job is the one that
+# reports phantom prints.
+for NAME in $PRINTER $BW $COLOUR; do
+  CURRENT=$(lpoptions -p "$NAME" 2>/dev/null | tr ' ' '
 ' | grep '^printer-error-policy=' || true)
   if [[ "$CURRENT" == *abort-job* || "$CURRENT" == *retry-job* ]]; then
-    echo "==> Putting $PRINTER back on stop-printer (was ${CURRENT#*=})"
-    lpadmin -p "$PRINTER" -o printer-error-policy=stop-printer
+    echo "==> Putting $NAME back on stop-printer (was ${CURRENT#*=})"
+    lpadmin -p "$NAME" -o printer-error-policy=stop-printer
   fi
-fi
+done
 
 FOUND=$(lpstat -e | wc -l)
 if [[ -n "$PRINTER" ]]; then
