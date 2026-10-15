@@ -160,14 +160,68 @@ be a loop and not a one-shot: after a power cut this PC is often up minutes
 before the switch and the ISP are, and a single early attempt fails with
 nothing to retry it.
 
-Find what the portal's form posts -- open it once by hand (`http://1.1.1.1`
-over plain HTTP, so it redirects instead of failing on a certificate) with
-DevTools on the Network tab, and note the POST URL and the field names. Or:
+### 4a. Ask for a MAC exemption first
+
+An always-on machine that prints unattended is what MAC bypass exists for, and
+it retires everything else in this section. Get the address, then ask whoever
+runs the firewall:
 
 ```bash
-curl -sL -o /tmp/portal.html -w 'landed on: %{url_effective}\n' http://1.1.1.1
-grep -o '<form[^>]*>\|<input[^>]*>' /tmp/portal.html
+ip -br link show | grep -v LOOPBACK        # the wired NIC's ether address
 ```
+
+### 4b. Check whether automation is needed at all
+
+Some portals authenticate by MAC, and the session then survives a reboot:
+
+```bash
+sudo reboot
+# once it is back, having logged in to nothing:
+curl -fsS -o /dev/null -w '%{http_code}' https://api.printvendo.com/health; echo
+```
+
+`200` means there is nothing to automate. Build the keeper only if that fails.
+
+### 4c. Find the portal
+
+Let it tell you where it is. Plain HTTP on purpose -- an HTTPS URL gets a
+certificate error instead of a redirect:
+
+```bash
+curl -sIL --max-time 10 http://1.1.1.1 | grep -iE '^location|^HTTP'
+curl -sL --max-time 10 -o /tmp/portal.html -w 'landed on: %{url_effective}' http://1.1.1.1; echo
+grep -oE '<form[^>]*>|<input[^>]*>' /tmp/portal.html
+```
+
+That `Location:` header, or the `landed on:` line, **is** the portal URL. Some
+networks also hand it over in DHCP:
+
+```bash
+grep -riE 'captive|portal|OPTION_114' /run/systemd/netif/leases/ 2>/dev/null
+```
+
+Nothing redirects? Then the portal is the gateway on an odd port, and which
+port it is names the vendor:
+
+```bash
+ip route | grep default                   # the gateway
+sudo apt-get install -y nmap
+sudo nmap -Pn -p 80,443,1000,1003,8000,8002,8080,8090,8443 GATEWAY
+```
+
+| Open port | Likely | Login endpoint |
+|---|---|---|
+| 8002 / 8003 | **pfSense** | `/index.php?zone=<zone>` |
+| 8090 | Cyberoam / Sophos | `/login.xml` |
+| 1000 / 1003 | Fortinet FortiGate | `/login` |
+| 80 plus `/login` | MikroTik hotspot | `/login` |
+| 8080 / 443 | Ruckus / Aruba / Cisco | vendor-specific |
+
+When the shape is unfamiliar, do it the reliable way: open `http://1.1.1.1` in
+the browser on that machine, `F12` -> **Network** -> tick "Preserve log", log in
+by hand, find the request that carried the credentials, and right-click ->
+**Copy as cURL**. That one string holds the URL, the method, every field name
+and any hidden token.
 
 **pfSense** is the common one on a hostel LAN, and needs no guessing. A portal
 URL shaped like `http://<gateway>:8002/index.php?zone=<zonename>` is pfSense:
@@ -191,7 +245,17 @@ EOF
 sudo chmod 600 /etc/printvendo/portal.env
 ```
 
-The keeper:
+Prove the login works once, by hand, before wrapping it in a service: a
+service that fails silently looks exactly like a network that is down.
+
+```bash
+. /etc/printvendo/portal.env
+curl -fsS --max-time 20 -o /dev/null --data-urlencode "auth_user=$PORTAL_USER" --data-urlencode "auth_pass=$PORTAL_PASS" --data-urlencode "zone=$PORTAL_ZONE" --data-urlencode "redirurl=http://neverssl.com" --data-urlencode "accept=Continue" "$PORTAL_URL"
+curl -fsS -o /dev/null -w 'health: %{http_code}' https://api.printvendo.com/health; echo
+```
+
+`health: 200` and it works. Then the keeper, which does the same thing for
+ever:
 
 ```bash
 sudo tee /usr/local/bin/portal-keeper >/dev/null <<'EOF'
