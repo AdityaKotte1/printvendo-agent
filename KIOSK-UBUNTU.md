@@ -169,12 +169,22 @@ curl -sL -o /tmp/portal.html -w 'landed on: %{url_effective}\n' http://1.1.1.1
 grep -o '<form[^>]*>\|<input[^>]*>' /tmp/portal.html
 ```
 
+**pfSense** is the common one on a hostel LAN, and needs no guessing. A portal
+URL shaped like `http://<gateway>:8002/index.php?zone=<zonename>` is pfSense:
+it posts back to that same URL with `auth_user`, `auth_pass`, a hidden `zone`,
+`redirurl`, and a submit field named `accept`. Its session is bound to the
+client MAC and IP, so a DHCP change ends it -- get a static lease -- and the
+zone's **hard timeout** will log a kiosk out mid-day, which the loop below
+recovers from within a minute. Better still, ask for the kiosk's MAC under that
+zone's **Allowed MAC addresses**, and then none of this is needed.
+
 Store the credentials where only root can read them:
 
 ```bash
 sudo install -d -m 700 /etc/printvendo
 sudo tee /etc/printvendo/portal.env >/dev/null <<'EOF'
-PORTAL_URL=http://10.0.0.1:8090/login.xml
+PORTAL_URL=http://172.20.28.1:8002/index.php?zone=hostelzone
+PORTAL_ZONE=hostelzone
 PORTAL_USER=theusername
 PORTAL_PASS=thepassword
 EOF
@@ -197,8 +207,11 @@ while :; do
   if ! curl -fsS --max-time 10 -o /dev/null https://api.printvendo.com/health; then
     . /etc/printvendo/portal.env
     curl -fsS --max-time 20 -o /dev/null \
-      --data-urlencode "username=$PORTAL_USER" \
-      --data-urlencode "password=$PORTAL_PASS" \
+      --data-urlencode "auth_user=$PORTAL_USER" \
+      --data-urlencode "auth_pass=$PORTAL_PASS" \
+      --data-urlencode "zone=${PORTAL_ZONE:-}" \
+      --data-urlencode "redirurl=http://neverssl.com" \
+      --data-urlencode "accept=Continue" \
       "$PORTAL_URL" || true
     if curl -fsS --max-time 10 -o /dev/null https://api.printvendo.com/health; then
       logger -t portal-keeper "online again"
