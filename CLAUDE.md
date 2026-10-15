@@ -63,6 +63,10 @@ checked against the machine rather than assumed.
 
 ## Setting one up
 
+`KIOSK-UBUNTU.md` is the unattended build for a shop PC or thin client: auto
+power-on after a cut, a captive-portal keeper, no login screen, and the shop
+screen relaunched for ever. It is a runbook, not a second installer.
+
 `SETUP.md` is the whole procedure for a person doing it: what to install first,
 how to add a printer to CUPS over SSH, the bench setup against a laptop, and
 what each failure means. What follows is the shape of it.
