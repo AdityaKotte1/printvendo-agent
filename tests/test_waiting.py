@@ -366,3 +366,105 @@ def test_waiting_gives_up_rather_than_blocking_for_ever():
         )
         is False
     )
+
+
+# ── how a finished job ended ────────────────────────────────────────────────
+#
+# Leaving `lpstat -o` is not the same as printing. CUPS takes a job off the
+# queue when it completes, when somebody cancels it and when it gives up on
+# it -- and only the first one put paper in anybody's hand.
+
+
+def _ipp_attr(tag: int, name: str, value: bytes) -> bytes:
+    raw = name.encode()
+    return (
+        bytes([tag])
+        + len(raw).to_bytes(2, "big")
+        + raw
+        + len(value).to_bytes(2, "big")
+        + value
+    )
+
+
+def _ipp_response(*, status: int = 0x0000, job_state: int | None = None,
+                  reasons: tuple[str, ...] = (), impressions: int | None = None) -> bytes:
+    body = b"\x02\x00" + status.to_bytes(2, "big") + (1).to_bytes(4, "big")
+    body += b"\x01" + _ipp_attr(0x47, "attributes-charset", b"utf-8")
+    body += _ipp_attr(0x48, "attributes-natural-language", b"en")
+    body += b"\x02"
+    if job_state is not None:
+        body += _ipp_attr(0x23, "job-state", job_state.to_bytes(4, "big"))
+    for i, reason in enumerate(reasons):
+        # Second and later values of one attribute carry an empty name.
+        body += _ipp_attr(0x44, "" if i else "job-state-reasons", reason.encode())
+    if impressions is not None:
+        body += _ipp_attr(
+            0x21, "job-impressions-completed", impressions.to_bytes(4, "big")
+        )
+    return body + b"\x03"
+
+
+def test_the_job_number_is_the_part_after_the_last_dash():
+    from agent.waiting import cups_job_number
+
+    assert cups_job_number("EPSON_L6460-42") == 42
+    assert cups_job_number("Front-Desk-HP-7") == 7
+
+
+def test_the_request_asks_cups_about_that_one_job():
+    from agent.waiting import ipp_get_job_request
+
+    request = ipp_get_job_request(42, user="pi")
+
+    assert request[:2] == b"\x02\x00"
+    assert request[2:4] == b"\x00\x09"  # Get-Job-Attributes
+    assert b"ipp://localhost/jobs/42" in request
+    assert b"job-state" in request
+    assert request.endswith(b"\x03")
+
+
+@pytest.mark.parametrize(
+    ("job_state", "expected"),
+    [(9, "COMPLETED"), (8, "ABORTED"), (7, "CANCELLED")],
+)
+def test_the_way_a_job_ended_is_read_off_cups(job_state, expected):
+    from agent.waiting import JobEnd, parse_job_end
+
+    end = parse_job_end(_ipp_response(job_state=job_state))
+
+    assert end.outcome is JobEnd[expected]
+
+
+def test_the_reasons_and_pages_come_along_for_the_log():
+    from agent.waiting import parse_job_end
+
+    end = parse_job_end(
+        _ipp_response(
+            job_state=8,
+            reasons=("job-aborted-by-system", "printer-stopped"),
+            impressions=3,
+        )
+    )
+
+    assert end.reasons == ("job-aborted-by-system", "printer-stopped")
+    assert end.impressions == 3
+
+
+def test_a_job_cups_no_longer_remembers_is_unknown_not_printed():
+    from agent.waiting import JobEnd, parse_job_end
+
+    assert parse_job_end(_ipp_response(status=0x0406)).outcome is JobEnd.UNKNOWN
+
+
+@pytest.mark.parametrize("body", [b"", b"\x02\x00", b"not ipp at all"])
+def test_an_answer_that_cannot_be_read_is_unknown(body):
+    from agent.waiting import JobEnd, parse_job_end
+
+    assert parse_job_end(body).outcome is JobEnd.UNKNOWN
+
+
+def test_a_job_still_in_hand_is_not_called_finished():
+    """Processing-stopped (6) is a job on a stopped printer, not an ending."""
+    from agent.waiting import JobEnd, parse_job_end
+
+    assert parse_job_end(_ipp_response(job_state=6)).outcome is JobEnd.UNKNOWN

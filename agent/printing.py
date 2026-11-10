@@ -21,16 +21,20 @@ work anything out. The old agent parsed an `options` string and re-derived
 things, which is how a price, a paper count and a printed job come to disagree.
 """
 
+import logging
 import platform
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from agent.waiting import (
     DEFAULT_TIMEOUT,
+    JobEnd,
     JobState,
     cancel_windows_jobs,
+    cups_job_end,
     cups_job_id,
     cups_watcher,
     wait_until_idle,
@@ -38,6 +42,8 @@ from agent.waiting import (
     windows_job_ids,
     windows_watcher,
 )
+
+log = logging.getLogger("agent")
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -62,6 +68,62 @@ def printing_allowance(expected_sheets: int) -> float:
     figure that already includes copies and duplex.
     """
     return max(DEFAULT_TIMEOUT, expected_sheets * SECONDS_PER_SHEET)
+
+
+# How long paper takes to come out once the printer has the data -- a
+# different question from the allowance above, which is how long before the
+# agent gives up. These are the slow end of a small inkjet (an Epson L6460 is
+# rated at about 15 sides a minute in black, 8 in colour) plus room for the
+# first sheet, which waits on warm-up and sometimes a head clean. Generous on
+# purpose: too long costs the shop a few seconds a job, too short sends the
+# next job onto this one's paper.
+FIRST_SHEET_SECONDS = 20
+SECONDS_PER_SIDE_MONO = 6
+SECONDS_PER_SIDE_COLOUR = 10
+
+# How often a long wait for paper lets the heartbeat run. The server's lease
+# on the job is fifteen minutes; a silent wait past it fails a job whose paper
+# is still coming out.
+PAPER_TICK_SECONDS = 30
+
+
+def time_to_print(task: "Task") -> float:
+    """Seconds for this job's paper to come out, from the moment it was sent."""
+    sides = task.expected_sheets * (2 if task.duplex else 1)
+    per_side = SECONDS_PER_SIDE_COLOUR if task.colour else SECONDS_PER_SIDE_MONO
+    return FIRST_SHEET_SECONDS + sides * per_side
+
+
+def wait_for_paper(
+    task: "Task",
+    *,
+    since: float,
+    on_tick: Callable[[], None] | None = None,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Hold the next job until this one's paper should be out. Never raises.
+
+    CUPS says a USB job is finished when it has *sent* it, and `lpstat -p` goes
+    idle at the same moment -- neither has any way to see paper. An inkjet
+    takes a whole document into its buffer and prints it over minutes, so the
+    next job used to arrive while this one was still coming out, and pages of
+    a job already reported printed never appeared, on either printer.
+
+    A time estimate rather than a reading, because over USB there is nothing
+    to read. Time already spent waiting for the queue counts, since that was
+    paper coming out too.
+    """
+    remaining = time_to_print(task) - (now() - since)
+    if remaining <= 0:
+        return
+    log.info("letting %s's paper come out: %.0fs more", task.task_id, remaining)
+    while remaining > 0:
+        step = min(PAPER_TICK_SECONDS, remaining)
+        sleep(step)
+        remaining -= step
+        if on_tick is not None:
+            on_tick()
 
 
 @dataclass(frozen=True)
@@ -157,6 +219,14 @@ def build_cups_command(task: Task, *, file_path: str, printer: str) -> list[str]
     # would otherwise halve the paper of every single-sided job while the
     # student is charged for -- and the tray is counted for -- single sides.
     cmd += ["-o", f"sides={'two-sided-long-edge' if task.duplex else 'one-sided'}"]
+
+    # A4, and the page fitted onto it. With no media named, a US Letter PDF
+    # (ONLYOFFICE's and Word's default outside India) carried its own size to
+    # the printer, which stopped and held the job asking for Letter -- the
+    # shop went stuck on a one-page file. Fitting is stated both ways, as
+    # colour is below: `print-scaling` is the IPP attribute, `fit-to-page` the
+    # older filter option, and which one a filter chain honours varies.
+    cmd += ["-o", "media=A4", "-o", "print-scaling=fit", "-o", "fit-to-page"]
 
     if task.colour:
         cmd += ["-o", "print-color-mode=color", "-o", "Ink=COLOR"]
@@ -276,6 +346,14 @@ def build_pcl_command(
         "-dSAFER",
         "-sDEVICE=" + ("pxlcolor" if task.colour else "pxlmono"),
         "-sOutputFile=" + out_path,
+        # PCL-XL names its paper size, and without these it names the PDF's:
+        # a US Letter file (ONLYOFFICE's and Word's default outside India)
+        # asked an A4 printer for Letter, and the printer stopped and held the
+        # job waiting for paper nobody loads -- the shop went stuck on a
+        # one-page file. Fixed A4 plus fit-to-page, exactly as `mswinpr2` does.
+        "-sPAPERSIZE=a4",
+        "-dFIXEDMEDIA",
+        "-dPDFFitPage",
     ]
 
     # Stated in both directions, as on CUPS and as `mswinpr2` did: a printer
@@ -460,6 +538,43 @@ def _judge(printer: str, ours: set[int], outcome: JobState) -> None:
     )
 
 
+def _confirm_completed(job_id: str) -> None:
+    """Raise unless CUPS says the job it let go of was *completed*.
+
+    Leaving `lpstat -o` is what a printed job does -- and also what a cancelled
+    one does, and what an aborted one does under any error policy but
+    `stop-printer`. The installer sets that policy, but a printer re-added
+    through the CUPS page or a driver reinstall quietly undoes it, and then a
+    job CUPS threw away was reported printed and charged. So the ending is
+    asked for rather than inferred.
+
+    An ordinary failure, not `PrinterStuck`: one job ending badly does not mean
+    the shop is broken, and the next file may print fine.
+
+    UNKNOWN is let through, loudly. CUPS keeps job history by default, so
+    this is a CUPS that cannot be reached or has been told to forget -- and
+    failing on it would fail and refund every print in the shop, paper and
+    all. It is the behaviour before this check existed, not a new guess.
+    """
+    end = cups_job_end(job_id)
+    detail = (
+        f"job {job_id} ended {end.outcome.value}"
+        f" (reasons: {', '.join(end.reasons) or 'none'};"
+        f" pages counted: {end.impressions if end.impressions is not None else '?'})"
+    )
+    if end.outcome is JobEnd.COMPLETED:
+        log.info(detail)
+        return
+    if end.outcome is JobEnd.UNKNOWN:
+        log.warning("%s -- treating it as printed, as before", detail)
+        return
+    log.error(detail)
+    raise RuntimeError(
+        f"the printer did not finish this job: CUPS {end.outcome.value} it"
+        f" ({', '.join(end.reasons) or 'no reason given'})"
+    )
+
+
 class PrinterStuck(RuntimeError):
     """The printer took the job and did not finish it.
 
@@ -533,6 +648,7 @@ def print_task(
     # made, and the spooler names every one of them "Ghostscript output".
     before = windows_job_ids(printer) if IS_WINDOWS else set()
 
+    sent_at = time.monotonic()
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(
@@ -541,6 +657,7 @@ def print_task(
         )
 
     ours: set[int] = set()
+    job_id = ""
     if IS_WINDOWS:
         # Whatever appeared after we printed is ours.
         ours = windows_job_ids(printer) - before
@@ -548,7 +665,8 @@ def print_task(
     else:
         # `lp` names the job it made. Without that there is nothing to follow,
         # and `cups_job_id` raises rather than letting the agent guess.
-        watch = cups_watcher(cups_job_id(result.stdout), printer)
+        job_id = cups_job_id(result.stdout)
+        watch = cups_watcher(job_id, printer)
 
     outcome = watch_job(
         watch,
@@ -558,6 +676,8 @@ def print_task(
     )
 
     _judge(printer, ours, outcome)
+    if not IS_WINDOWS:
+        _confirm_completed(job_id)
 
     # The queue letting go means CUPS finished *sending*, not that paper has
     # stopped. A fifteen-page job streams into the printer's buffer in seconds
@@ -571,3 +691,5 @@ def print_task(
     # not a wrong report, which is why it returns rather than raising.
     if not IS_WINDOWS:
         wait_until_idle(printer)
+        # And idle is not paper either, on USB: see `wait_for_paper`.
+        wait_for_paper(task, since=sent_at, on_tick=on_tick)

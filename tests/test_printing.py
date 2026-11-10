@@ -182,3 +182,179 @@ def test_a_job_that_printed_is_not_touched(monkeypatch, tmp_path):
     print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
 
     assert cancelled == []
+
+
+def _cups_print(monkeypatch, end):
+    """Drive the CUPS path with no lp, no queue and no scheduler."""
+    import subprocess as sp
+
+    from agent import printing
+    from agent.waiting import JobState
+
+    asked: list = []
+    monkeypatch.setattr(printing, "IS_WINDOWS", False)
+    monkeypatch.setattr(printing, "build_command", lambda *a, **k: ["lp"])
+    monkeypatch.setattr(
+        printing.subprocess,
+        "run",
+        lambda *a, **k: sp.CompletedProcess(a, 0, "request id is Shop-42 (1 file(s))", ""),
+    )
+    monkeypatch.setattr(printing, "cups_watcher", lambda job_id, printer: lambda: JobState.GONE)
+    monkeypatch.setattr(printing, "watch_job", lambda watch, **_: JobState.GONE)
+    monkeypatch.setattr(printing, "wait_until_idle", lambda printer: True)
+    monkeypatch.setattr(printing, "wait_for_paper", lambda task, **kw: None)
+
+    def ended(job_id):
+        asked.append(job_id)
+        return end
+
+    monkeypatch.setattr(printing, "cups_job_end", ended)
+    return asked
+
+
+@pytest.mark.parametrize("outcome", ["ABORTED", "CANCELLED"])
+def test_a_job_cups_gave_up_on_is_not_reported_printed(monkeypatch, tmp_path, outcome):
+    """It left the queue exactly as a printed job does. Only CUPS knows the
+    difference, so the agent asks -- and a failure is what reaches a refund."""
+    from agent.printing import PrinterStuck, print_task
+    from agent.waiting import JobEnd, JobEnding
+
+    asked = _cups_print(monkeypatch, JobEnding(JobEnd[outcome]))
+
+    with pytest.raises(RuntimeError) as raised:
+        print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert asked == ["Shop-42"]
+    # One job ending badly is not a jammed shop: the next file may print fine.
+    assert not isinstance(raised.value, PrinterStuck)
+
+
+def test_a_job_cups_completed_is_printed(monkeypatch, tmp_path):
+    from agent.printing import print_task
+    from agent.waiting import JobEnd, JobEnding
+
+    asked = _cups_print(monkeypatch, JobEnding(JobEnd.COMPLETED))
+
+    print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert asked == ["Shop-42"]
+
+
+def test_a_job_cups_cannot_account_for_is_left_as_printed(monkeypatch, tmp_path):
+    """No answer is not evidence of failure either: a CUPS that keeps no job
+    history would otherwise fail every print in the shop and refund paper
+    that came out."""
+    from agent.printing import print_task
+    from agent.waiting import JobEnd, JobEnding
+
+    _cups_print(monkeypatch, JobEnding(JobEnd.UNKNOWN))
+
+    print_task(_windows_job(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+
+# ── waiting for the paper, not the queue ────────────────────────────────────
+#
+# CUPS calls a USB job finished when it has *sent* it. An inkjet buffers
+# pages, so the next job used to arrive while this one was still coming out --
+# and the paper that should have followed never did, on a job already reported
+# printed.
+
+
+def _task(*, sheets=10, duplex=False, colour=False):
+    from agent.printing import Task
+
+    return Task.from_response(
+        {
+            "task_id": "tsk_p",
+            "document_id": "doc_p",
+            "filename": "tsk_p.pdf",
+            "page_count": sheets,
+            "copies": 1,
+            "duplex": duplex,
+            "colour": colour,
+            "page_range": None,
+            "expected_sheets": sheets,
+        }
+    )
+
+
+def test_a_longer_job_takes_longer_to_come_out():
+    from agent.printing import time_to_print
+
+    assert time_to_print(_task(sheets=20)) > time_to_print(_task(sheets=2))
+
+
+def test_both_sides_and_colour_take_longer():
+    from agent.printing import time_to_print
+
+    plain = time_to_print(_task())
+    assert time_to_print(_task(duplex=True)) > plain
+    assert time_to_print(_task(colour=True)) > plain
+
+
+def _clock(start=0.0):
+    state = {"now": start, "slept": 0.0, "ticks": 0}
+
+    def now():
+        return state["now"]
+
+    def sleep(seconds):
+        state["now"] += seconds
+        state["slept"] += seconds
+
+    def tick():
+        state["ticks"] += 1
+
+    return state, now, sleep, tick
+
+
+def test_the_wait_lasts_until_the_paper_should_be_out():
+    from agent.printing import time_to_print, wait_for_paper
+
+    state, now, sleep, tick = _clock()
+    task = _task(sheets=10)
+
+    wait_for_paper(task, since=0.0, now=now, sleep=sleep, on_tick=tick)
+
+    assert state["now"] >= time_to_print(task)
+
+
+def test_time_already_spent_printing_counts_towards_it():
+    """The queue took a while to empty; that was paper coming out too."""
+    from agent.printing import time_to_print, wait_for_paper
+
+    task = _task(sheets=10)
+    state, now, sleep, tick = _clock(start=time_to_print(task) + 1)
+
+    wait_for_paper(task, since=0.0, now=now, sleep=sleep, on_tick=tick)
+
+    assert state["slept"] == 0
+
+
+def test_a_long_wait_keeps_the_heartbeat_going():
+    """The server's lease on the job is fifteen minutes. A silent wait longer
+    than that fails a job whose paper is still coming out."""
+    from agent.printing import wait_for_paper
+
+    state, now, sleep, tick = _clock()
+
+    wait_for_paper(_task(sheets=200, duplex=True, colour=True), since=0.0,
+                   now=now, sleep=sleep, on_tick=tick)
+
+    assert state["ticks"] >= state["slept"] // 60
+
+
+def test_the_next_job_waits_for_this_ones_paper(monkeypatch, tmp_path):
+    from agent import printing
+    from agent.printing import print_task
+    from agent.waiting import JobEnd, JobEnding
+
+    _cups_print(monkeypatch, JobEnding(JobEnd.COMPLETED))
+    waited: list = []
+    monkeypatch.setattr(
+        printing, "wait_for_paper", lambda task, **kw: waited.append(task.task_id)
+    )
+
+    print_task(_task(), file_path=tmp_path / "a.pdf", printer="Shop")
+
+    assert waited == ["tsk_p"]

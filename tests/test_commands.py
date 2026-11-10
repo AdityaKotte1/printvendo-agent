@@ -146,3 +146,18 @@ def test_windows_runs_ghostscript_under_safer():
     else's file, and Ghostscript will execute what is in it if allowed to."""
     assert "-dSAFER" in command("windows")
     assert "-dNOSAFER" not in command("windows")
+
+
+def test_cups_asks_for_a4_and_fits_the_page():
+    """A US Letter PDF -- ONLYOFFICE's and Word's default outside India -- sent
+    with no paper size let CUPS pass the PDF's own size through, and an A4
+    printer stopped and held the job asking for Letter. The shop went stuck on
+    a one-page file. Both spellings of fitting, as with colour: which one a
+    filter chain honours varies by CUPS version."""
+    built = build_cups_command(task(), file_path="/tmp/essay.pdf", printer="HP-01")
+
+    assert ["-o", "media=A4"] == built[built.index("media=A4") - 1 : built.index("media=A4") + 1]
+    assert "print-scaling=fit" in built
+    assert "fit-to-page" in built
+    # Options before the file, which lp reads as the last argument.
+    assert built[-1] == "/tmp/essay.pdf"

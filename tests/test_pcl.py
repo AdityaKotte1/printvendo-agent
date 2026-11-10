@@ -229,3 +229,49 @@ def test_a_page_range_sends_fewer_pages(two_page_pdf, tmp_path):
     everything = _render(two_page_pdf, tmp_path, "all")
 
     assert len(one) < len(everything)
+
+
+# ── every page comes out on A4 ──────────────────────────────────────────────
+
+
+def test_the_page_is_fixed_to_a4_and_fitted():
+    """A PDF made in US Letter -- ONLYOFFICE's and Word's default outside India
+    -- was rendered at Letter, and PCL-XL names its paper. An A4 printer told to
+    print on Letter stops and asks for Letter, holding the job: the shop went
+    stuck on a one-page file. `mswinpr2` already fixed A4 and fitted the page;
+    this path never did."""
+    command = build()
+    assert "-sPAPERSIZE=a4" in command
+    assert "-dFIXEDMEDIA" in command
+    assert "-dPDFFitPage" in command
+
+
+@pytest.fixture
+def letter_pdf(tmp_path):
+    import subprocess
+
+    pdf = tmp_path / "letter.pdf"
+    subprocess.run(
+        [
+            _ghostscript(), "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
+            "-sPAPERSIZE=letter", "-dFIXEDMEDIA",
+            f"-sOutputFile={pdf}", "-c", "72 700 moveto showpage",
+        ],
+        check=True, capture_output=True, timeout=120,
+    )
+    return pdf
+
+
+# PCL-XL's MediaSize enumeration: the attribute id is 0x25, preceded by the
+# attribute tag 0xF8 and, before that, the ubyte value.
+_MEDIA_SIZE = b"\xf8\x25"
+_LETTER, _A4 = 0, 2
+
+
+@needs_ghostscript
+@pytest.mark.parametrize("colour", [False, True])
+def test_a_letter_pdf_asks_the_printer_for_a4(letter_pdf, tmp_path, colour):
+    data = _render(letter_pdf, tmp_path, f"letter-{colour}", colour=colour)
+    at = data.find(_MEDIA_SIZE)
+    assert at > 0
+    assert data[at - 1] == _A4

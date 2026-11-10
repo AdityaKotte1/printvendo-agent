@@ -26,6 +26,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 
 log = logging.getLogger("agent")
@@ -242,6 +243,150 @@ def cups_watcher(job_id: str, printer: str) -> Callable[[], JobState]:
         )
 
     return _look
+
+
+# ── how a CUPS job ended ────────────────────────────────────────────────────
+
+
+class JobEnd(Enum):
+    """What CUPS says became of a job once it left the queue."""
+
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+    CANCELLED = "cancelled"
+    # CUPS could not be asked, or no longer remembers the job.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class JobEnding:
+    outcome: JobEnd
+    reasons: tuple[str, ...] = ()
+    # Pages CUPS counted out. Only as good as the driver's reporting, so it is
+    # logged and never used to decide anything.
+    impressions: int | None = None
+
+
+# RFC 8011 job-state values that are an ending. 3-6 are not: a job held or on
+# a stopped printer is still in hand.
+_ENDINGS = {9: JobEnd.COMPLETED, 8: JobEnd.ABORTED, 7: JobEnd.CANCELLED}
+
+CUPS_URL = "http://localhost:631/"
+
+
+def cups_job_number(job_id: str) -> int:
+    """`EPSON_L6460-42` is job 42. The printer's name may contain dashes, the
+    number never does."""
+    return int(job_id.rsplit("-", 1)[1])
+
+
+def _ipp_attribute(tag: int, name: str, value: bytes) -> bytes:
+    raw = name.encode()
+    return (
+        bytes([tag])
+        + len(raw).to_bytes(2, "big")
+        + raw
+        + len(value).to_bytes(2, "big")
+        + value
+    )
+
+
+def ipp_get_job_request(job_number: int, *, user: str) -> bytes:
+    """An IPP Get-Job-Attributes request for one job, encoded by hand.
+
+    A few lines of RFC 8010 rather than a package: this runs unattended at a
+    shop, and `ipptool` is in a separate Debian package most Pis do not have.
+    """
+    wanted = ("job-state", "job-state-reasons", "job-impressions-completed")
+    body = b"\x02\x00" + (0x0009).to_bytes(2, "big") + (1).to_bytes(4, "big")
+    body += b"\x01"
+    body += _ipp_attribute(0x47, "attributes-charset", b"utf-8")
+    body += _ipp_attribute(0x48, "attributes-natural-language", b"en")
+    body += _ipp_attribute(
+        0x45, "job-uri", f"ipp://localhost/jobs/{job_number}".encode()
+    )
+    body += _ipp_attribute(0x42, "requesting-user-name", user.encode())
+    for i, name in enumerate(wanted):
+        # Further values of one attribute are written with an empty name.
+        body += _ipp_attribute(0x44, "" if i else "requested-attributes", name.encode())
+    return body + b"\x03"
+
+
+def parse_job_end(body: bytes) -> JobEnding:
+    """Read the ending out of a Get-Job-Attributes response.
+
+    Anything short of a successful answer naming a final state is UNKNOWN --
+    never COMPLETED, and never a failure either. What to do with not knowing is
+    the caller's decision, not the parser's.
+    """
+    unknown = JobEnding(JobEnd.UNKNOWN)
+    if len(body) < 9 or body[0] not in (1, 2):
+        return unknown
+    # 0x0000-0x00FF are the successful status codes.
+    if int.from_bytes(body[2:4], "big") > 0x00FF:
+        return unknown
+
+    state: int | None = None
+    reasons: list[str] = []
+    impressions: int | None = None
+    name = ""
+    at = 8
+    try:
+        while at < len(body):
+            tag = body[at]
+            at += 1
+            if tag == 0x03:
+                break
+            if tag < 0x10:
+                continue  # the start of another attribute group
+            length = int.from_bytes(body[at : at + 2], "big")
+            at += 2
+            if length:
+                name = body[at : at + length].decode()
+            at += length
+            length = int.from_bytes(body[at : at + 2], "big")
+            at += 2
+            value = body[at : at + length]
+            at += length
+            if len(value) != length:
+                return unknown
+
+            if name == "job-state" and tag == 0x23:
+                state = int.from_bytes(value, "big")
+            elif name == "job-state-reasons":
+                reasons.append(value.decode(errors="replace"))
+            elif name == "job-impressions-completed" and tag == 0x21:
+                impressions = int.from_bytes(value, "big")
+    except UnicodeDecodeError:
+        return unknown
+
+    outcome = _ENDINGS.get(state) if state is not None else None
+    if outcome is None:
+        return unknown
+    return JobEnding(outcome, tuple(reasons), impressions)
+
+
+def cups_job_end(job_id: str) -> JobEnding:
+    """Ask the local CUPS how this job ended. Never raises.
+
+    `lpstat` cannot answer it: `-W completed` lists cancelled and aborted jobs
+    alongside printed ones, and `lpstat -o` loses all three the same way.
+    """
+    import getpass
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(
+            CUPS_URL,
+            data=ipp_get_job_request(cups_job_number(job_id), user=getpass.getuser()),
+            headers={"Content-Type": "application/ipp"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 - localhost only
+            return parse_job_end(response.read())
+    except Exception as exc:  # noqa: BLE001 - not knowing is an answer the caller handles
+        log.warning("could not ask CUPS how job %s ended: %s", job_id, exc)
+        return JobEnding(JobEnd.UNKNOWN)
 
 
 def windows_job_ids(printer: str) -> set[int]:
