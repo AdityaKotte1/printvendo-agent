@@ -12,6 +12,8 @@ asking until the answer is nothing.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -21,6 +23,18 @@ log = logging.getLogger("agent")
 # Long enough for a big PDF on a bad connection, short enough that a dead
 # server does not hold the loop for ever.
 TIMEOUT = httpx.Timeout(30.0, read=120.0)
+
+# A download on a bad link: how long to keep resuming before giving up, and how
+# long a connection may go silent before it is dropped and resumed. Well inside
+# the server's fifteen-minute lease, so the agent reports the failure itself
+# rather than leaving the server to guess.
+DOWNLOAD_PATIENCE_SECONDS = 10 * 60
+DOWNLOAD_TIMEOUT = httpx.Timeout(30.0, read=30.0)
+DOWNLOAD_BACKOFF_MAX_SECONDS = 15.0
+
+
+class DownloadIncomplete(Exception):
+    """Every retry ran out before the whole file arrived."""
 
 
 class Backend:
@@ -93,33 +107,118 @@ class Backend:
         body = response.json()
         return body or None
 
-    def download(self, task, into: Path) -> Path:
-        """Fetch the file for a task we hold.
+    def download(
+        self,
+        task,
+        into: Path,
+        *,
+        on_tick: Callable[[], None] | None = None,
+        patience: float = DOWNLOAD_PATIENCE_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Path:
+        """Fetch the file for a task we hold, surviving a connection that drops.
+
+        **Resumed, never restarted.** A shop on unstable internet lost the
+        connection partway through and the job sat at "paid" for as long as
+        that went on -- or failed on the first drop. The bytes already on disk
+        are kept and the rest is asked for with `Range: bytes=N-`; the server
+        answers 206 with only what is missing. A server that ignores the range
+        answers 200 with the whole file, which replaces what we had rather than
+        being appended to it.
+
+        **The printer sees it only when every byte is here.** Until then it is
+        `<task>.pdf.part`, renamed only once its size matches what the server
+        said the file is. A half file printed is half a document a student paid
+        for.
+
+        A connection silent for thirty seconds is dropped and resumed rather
+        than trickled on for ever. `on_tick` is the heartbeat -- it only runs
+        when called, and a download that takes minutes must not make the shop
+        look offline or let the job's lease run out. A refusal (409: no longer
+        ours; 404: the file is gone) is raised at once; dropped connections and
+        5xx are retried with backoff until `patience` runs out.
 
         Streamed to disk rather than read into memory: a sixty-megabyte upload
         on a Pi with half a gigabyte of RAM is the difference between printing
         and being killed by the kernel.
 
-        **Named after the task, never after the student's file.** The bytes are
-        deleted the moment the job ends, but the *name* outlives them: `lp`
-        submits the job under the filename on disk, and CUPS keeps job history
-        long after it has removed the document itself. A shop's completed-jobs
-        list -- `lpstat -W completed`, or the CUPS web interface anyone on that
-        machine can open -- would otherwise read "Medical Results Ravi
-        Kumar.pdf" for as long as the Pi runs. The server already anonymises its
-        own Content-Disposition for the same reason; this was the one place the
-        original name still reached a disk in a shop.
+        **Named after the task, never after the student's file.** `lp` submits
+        the job under the filename on disk, and CUPS keeps job history long
+        after it has removed the document -- a shop's completed-jobs list would
+        otherwise carry a student's filename for as long as the Pi runs.
         """
         destination = into / f"{task.task_id}.pdf"
+        partial = into / f"{task.task_id}.pdf.part"
+        partial.unlink(missing_ok=True)
+        url = f"{self.base_url}/v1/device/tasks/{task.task_id}/file"
+        deadline = time.monotonic() + patience
+        attempt = 0
+
+        while True:
+            have = partial.stat().st_size if partial.exists() else 0
+            headers = dict(self._headers)
+            if have:
+                headers["Range"] = f"bytes={have}-"
+            try:
+                total = self._fetch_into(url, headers, partial, have, on_tick)
+                size = partial.stat().st_size if partial.exists() else 0
+                if total is None or size >= total:
+                    partial.replace(destination)
+                    return destination
+                # The connection closed cleanly but short. Resume like a drop.
+                problem = f"closed at {size} of {total} bytes"
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    partial.unlink(missing_ok=True)
+                    raise
+                problem = f"server said {exc.response.status_code}"
+            except httpx.TransportError as exc:
+                problem = f"{type(exc).__name__}: {exc}"
+
+            attempt += 1
+            if time.monotonic() >= deadline:
+                partial.unlink(missing_ok=True)
+                raise DownloadIncomplete(
+                    f"{task.task_id}: gave up after {attempt} tries ({problem})"
+                )
+            got = partial.stat().st_size if partial.exists() else 0
+            log.warning(
+                "download of %s interrupted at %s bytes (%s); resuming",
+                task.task_id,
+                got,
+                problem,
+            )
+            _tick(on_tick)
+            sleep(min(2.0 ** min(attempt, 4), DOWNLOAD_BACKOFF_MAX_SECONDS))
+
+    def _fetch_into(
+        self,
+        url: str,
+        headers: dict[str, str],
+        partial: Path,
+        have: int,
+        on_tick: Callable[[], None] | None,
+    ) -> int | None:
+        """One request. Writes to `partial` and returns the file's full size,
+        or None when the server did not say."""
         with self._client.stream(
-            "GET", f"{self.base_url}/v1/device/tasks/{task.task_id}/file",
-            headers=self._headers,
+            "GET", url, headers=headers, timeout=DOWNLOAD_TIMEOUT
         ) as response:
+            if have and response.status_code == 416:
+                # We already have everything the server has.
+                return have
             response.raise_for_status()
-            with destination.open("wb") as handle:
+            resumed = response.status_code == 206
+            total = _full_size(response, offset=have if resumed else 0)
+            since_tick = 0
+            with partial.open("ab" if resumed else "wb") as handle:
                 for chunk in response.iter_bytes():
                     handle.write(chunk)
-        return destination
+                    since_tick += len(chunk)
+                    if since_tick >= 1 << 20:
+                        since_tick = 0
+                        _tick(on_tick)
+            return total
 
     def report(self, task_id: str, state: str, *, sheets_used: int | None = None) -> None:
         """Say what happened. Paper is deducted from this.
@@ -237,3 +336,25 @@ def _message(response: httpx.Response) -> str:
     if isinstance(detail, str):
         return detail
     return f"the server refused that ({response.status_code})"
+
+
+def _full_size(response: httpx.Response, *, offset: int) -> int | None:
+    """How big the whole file is: from `Content-Range` on a 206, otherwise
+    what this response carries plus what we already had."""
+    ranged = response.headers.get("content-range", "")
+    if "/" in ranged:
+        tail = ranged.rsplit("/", 1)[1]
+        if tail.isdigit():
+            return int(tail)
+    length = response.headers.get("content-length")
+    return offset + int(length) if length and length.isdigit() else None
+
+
+def _tick(on_tick: Callable[[], None] | None) -> None:
+    """The heartbeat. A failure here must not stop a download."""
+    if on_tick is None:
+        return
+    try:
+        on_tick()
+    except Exception:  # noqa: BLE001
+        log.warning("heartbeat during download failed", exc_info=True)

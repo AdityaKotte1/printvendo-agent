@@ -29,7 +29,7 @@ class FakeBackend:
         self.claims += 1
         return self.queue.pop(0) if self.queue else None
 
-    def download(self, task: Task, into: Path) -> Path:
+    def download(self, task: Task, into: Path, **_kw) -> Path:
         self.downloaded.append(task.task_id)
         path = into / task.filename
         path.write_bytes(b"%PDF-1.4 pretend")
@@ -163,7 +163,7 @@ def test_a_download_that_fails_is_reported_rather_than_printed(tmp_path):
     silent -- its lease would expire and it would be handed out again."""
 
     class Broken(FakeBackend):
-        def download(self, task, into):
+        def download(self, task, into, **_kw):
             raise RuntimeError("connection reset")
 
     backend = Broken([a_task("tsk_1")])

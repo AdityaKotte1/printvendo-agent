@@ -45,7 +45,7 @@ class FakeBackend:
     def next_task(self):
         return self._tasks.pop(0) if self._tasks else None
 
-    def download(self, task, into: Path) -> Path:
+    def download(self, task, into: Path, **_kw) -> Path:
         path = into / "file.pdf"
         path.write_bytes(b"%PDF-1.4\n")
         return path

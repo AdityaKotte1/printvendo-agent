@@ -208,7 +208,9 @@ def _do_one(
     with _scratch(workspace) as folder:
         path: Path | None = None
         try:
-            path = backend.download(task, folder)
+            # Resumed across dropped connections, with the heartbeat kept
+            # beating, and handed over only once every byte has arrived.
+            path = backend.download(task, folder, on_tick=on_tick)
         except Exception as exc:  # noqa: BLE001 - reported, not swallowed
             log.error("could not fetch %s: %s", task.task_id, exc)
             _report(backend, task.task_id, "failed")
