@@ -468,3 +468,37 @@ def test_a_job_still_in_hand_is_not_called_finished():
     from agent.waiting import JobEnd, parse_job_end
 
     assert parse_job_end(_ipp_response(job_state=6)).outcome is JobEnd.UNKNOWN
+
+
+# ── a shop with two printers ────────────────────────────────────────────────
+
+
+def test_another_printers_job_does_not_make_ours_wait_for_ever(monkeypatch):
+    """`lpstat -o` with no printer lists every queue. At a shop with a mono and
+    a colour printer -- or one with an old job nobody cleared -- somebody
+    else's line came first, so ours read "waiting its turn" while its paper
+    was coming out: the order sat at "paid" until the wait ran out and the
+    shop was told the printer was stuck. Only this printer's queue counts."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from agent import waiting
+
+    queues = {
+        "color-1": "color-1-7 root 1024 Sat 14 Nov 2026 03:00:00 PM IST\n",
+        "mono-1": "mono-1-9 root 2048 Sat 14 Nov 2026 03:09:30 PM IST\n",
+    }
+
+    def run(args, **_kw):
+        if args[:2] == ["lpstat", "-o"]:
+            if len(args) == 2:
+                return SimpleNamespace(returncode=0, stdout="".join(queues.values()), stderr="")
+            return SimpleNamespace(returncode=0, stdout=queues[args[2]], stderr="")
+        idle = f"printer {args[2]} is idle.  enabled"
+        return SimpleNamespace(returncode=0, stdout=idle, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    look = waiting.cups_watcher("mono-1-9", "mono-1")
+
+    assert look() is JobState.PRINTING

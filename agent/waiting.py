@@ -225,8 +225,14 @@ def cups_watcher(job_id: str, printer: str) -> Callable[[], JobState]:
     """`lpstat -o` for the queue, `lpstat -p` for whether it has stopped."""
 
     def _look() -> JobState:
+        # This printer's queue, never every queue. With no printer named,
+        # `lpstat -o` lists every printer's jobs, and "the first line is the
+        # one on the printer" read somebody else's: at a shop with a mono and
+        # a colour printer -- or an old job nobody cleared -- ours sat at
+        # "waiting its turn" while its paper came out, the order stayed "paid",
+        # and fifteen minutes later the shop was told the printer was stuck.
         listing = subprocess.run(
-            ["lpstat", "-o"], capture_output=True, text=True, timeout=30
+            ["lpstat", "-o", printer], capture_output=True, text=True, timeout=30
         )
         if listing.returncode != 0:
             raise RuntimeError(listing.stderr.strip() or "lpstat -o failed")
