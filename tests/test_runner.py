@@ -11,6 +11,7 @@ a hint that work exists, never a count of it.
 
 from pathlib import Path
 
+from agent.api import Fetched
 from agent.printing import Task
 from agent.runner import run_once
 from agent.waiting import JobState
@@ -29,11 +30,14 @@ class FakeBackend:
         self.claims += 1
         return self.queue.pop(0) if self.queue else None
 
-    def download(self, task: Task, into: Path, **_kw) -> Path:
+    # Whether the server already cut the file down to the job's pages.
+    pages_selected = False
+
+    def download(self, task: Task, into: Path, **_kw) -> Fetched:
         self.downloaded.append(task.task_id)
         path = into / task.filename
         path.write_bytes(b"%PDF-1.4 pretend")
-        return path
+        return Fetched(path, pages_selected=self.pages_selected)
 
     def report(self, task_id: str, state: str, *, sheets_used: int | None = None) -> None:
         self.reports.append((task_id, state, sheets_used))
@@ -437,3 +441,30 @@ def test_a_jam_still_closes_the_shop(tmp_path):
 
     assert backend.paper == []
     assert [stuck for stuck, _ in backend.health] == [True]
+
+
+# -- a page range is applied exactly once --------------------------------------
+
+
+def test_pages_the_server_already_selected_are_not_selected_again(tmp_path):
+    """The file holds only pages 5-6 of the original. Asking the printer for
+    pages 5-6 *of that* prints nothing -- it has two pages."""
+    printed: list[Task] = []
+    backend = FakeBackend([a_task("tsk_1", page_range="5-6")])
+    backend.pages_selected = True
+
+    run_once(backend, printer="HP-01", workspace=tmp_path, printer_fn=printer_that_works(printed))
+
+    assert printed[0].page_range is None
+    assert printed[0].task_id == "tsk_1"
+
+
+def test_a_whole_file_still_has_its_range_applied_at_the_printer(tmp_path):
+    """The server said nothing, so the range is still ours to apply. Dropping
+    it here would print a hundred pages for a student who paid for two."""
+    printed: list[Task] = []
+    backend = FakeBackend([a_task("tsk_1", page_range="5-6")])
+
+    run_once(backend, printer="HP-01", workspace=tmp_path, printer_fn=printer_that_works(printed))
+
+    assert printed[0].page_range == "5-6"

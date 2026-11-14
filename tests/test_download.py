@@ -35,9 +35,14 @@ class Server:
     """Answers `Range` as the backend does, and drops the first `drops`
     connections after `cut` bytes of whatever it was sending."""
 
-    def __init__(self, *, drops: int = 0, cut: int = 30_000, honours_range=True):
+    def __init__(
+        self, *, drops: int = 0, cut: int = 30_000, honours_range=True, cuts=()
+    ):
         self.drops, self.cut, self.honours_range = drops, cut, honours_range
         self.ranges: list[str | None] = []
+        # Which requests, by position, are answered with the page cut.
+        self.cuts = tuple(cuts)
+        self.queries: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         asked = request.headers.get("range")
@@ -45,6 +50,9 @@ class Server:
         start = int(asked.split("=")[1].rstrip("-")) if asked and self.honours_range else 0
         body = FILE[start:]
         headers = {"accept-ranges": "bytes", "content-length": str(len(body))}
+        self.queries.append(request.url.query.decode())
+        if len(self.queries) - 1 in self.cuts:
+            headers["x-printvendo-pages"] = "selected"
         status = 200
         if start:
             status = 206
@@ -55,13 +63,19 @@ class Server:
         return httpx.Response(status, headers=headers, content=body)
 
 
-def _task():
-    return SimpleNamespace(task_id="prt_abc")
+def _task(page_range=None):
+    return SimpleNamespace(task_id="prt_abc", page_range=page_range)
+
+
+def _fetched(server, tmp_path, *, page_range=None, **kwargs):
+    backend = Backend(BASE, "dvt_x", client=httpx.Client(transport=httpx.MockTransport(server)))
+    return backend.download(
+        _task(page_range), tmp_path, sleep=lambda _s: None, **kwargs
+    )
 
 
 def _fetch(server, tmp_path, **kwargs):
-    backend = Backend(BASE, "dvt_x", client=httpx.Client(transport=httpx.MockTransport(server)))
-    return backend.download(_task(), tmp_path, sleep=lambda _s: None, **kwargs)
+    return _fetched(server, tmp_path, **kwargs).path
 
 
 def test_a_good_connection_fetches_in_one_go(tmp_path):
@@ -166,3 +180,62 @@ def test_a_connection_that_closes_cleanly_but_short_is_resumed(tmp_path):
 
     assert path.read_bytes() == FILE
     assert server.ranges == ["bytes=40000-"]
+
+
+# -- only the pages somebody asked for ----------------------------------------
+
+
+def test_a_job_with_a_page_range_asks_for_only_those_pages(tmp_path):
+    """Two pages of a hundred-page scan used to mean fetching the hundred, on
+    a shop's connection, and handing them all to the print system."""
+    server = Server(cuts=[0])
+
+    fetched = _fetched(server, tmp_path, page_range="1-2")
+
+    assert server.queries == ["pages=selected"]
+    assert fetched.pages_selected is True
+
+
+def test_a_job_with_no_range_asks_for_nothing_special(tmp_path):
+    server = Server()
+
+    fetched = _fetched(server, tmp_path)
+
+    assert server.queries == [""]
+    assert fetched.pages_selected is False
+
+
+def test_a_server_that_says_nothing_has_not_applied_the_range(tmp_path):
+    """An older server ignores the question and sends the whole file. Only its
+    saying so may stop the range being applied here -- otherwise a student who
+    paid for two pages collects a hundred."""
+    server = Server()
+
+    fetched = _fetched(server, tmp_path, page_range="1-2")
+
+    assert server.queries == ["pages=selected"]
+    assert fetched.pages_selected is False
+
+
+def test_a_resumed_cut_keeps_asking_for_the_cut(tmp_path):
+    server = Server(drops=1, cuts=[0, 1])
+
+    fetched = _fetched(server, tmp_path, page_range="1-2")
+
+    assert server.queries == ["pages=selected", "pages=selected"]
+    assert server.ranges == [None, "bytes=30000-"]
+    assert fetched.pages_selected is True
+    assert fetched.path.read_bytes() == FILE
+
+
+def test_two_halves_of_different_files_are_never_joined(tmp_path):
+    """The first answer was the cut and the resumed one is not -- a server
+    replaced mid-download. The bytes on disk belong to another file, so it
+    starts again rather than splicing them."""
+    server = Server(drops=1, cuts=[0])
+
+    fetched = _fetched(server, tmp_path, page_range="1-2")
+
+    assert server.ranges == [None, "bytes=30000-", None]
+    assert fetched.pages_selected is False
+    assert fetched.path.read_bytes() == FILE

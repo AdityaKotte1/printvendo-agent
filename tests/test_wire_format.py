@@ -195,7 +195,7 @@ def test_a_download_is_named_after_the_task_not_the_student_file(tmp_path):
         task_id="prt_abc", filename="Medical Results Ravi Kumar.pdf"
     )
 
-    saved = _backend(client).download(task, tmp_path)
+    saved = _backend(client).download(task, tmp_path).path
 
     assert saved.name == "prt_abc.pdf"
     assert "Ravi" not in str(saved)
@@ -361,3 +361,13 @@ def test_a_printer_out_of_paper_is_reported_by_name(sent):
 
     assert seen[0]["path"] == "/v1/device/printer-paper"
     assert seen[0]["body"] == {"printer": "HP LaserJet", "out_of_paper": True}
+
+
+def test_the_words_for_asking_for_a_jobs_pages_are_the_servers():
+    """`app/api/device/tasks.py`: `?pages=selected`, answered with
+    `X-Printvendo-Pages: selected`. A different spelling on either side and the
+    range is silently applied twice or not at all."""
+    from agent import api
+
+    assert api.SELECTED_PAGES == "selected"
+    assert api.PAGES_HEADER.lower() == "x-printvendo-pages"

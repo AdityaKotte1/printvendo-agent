@@ -14,6 +14,7 @@ asking until the answer is nothing.
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -33,8 +34,32 @@ DOWNLOAD_TIMEOUT = httpx.Timeout(30.0, read=30.0)
 DOWNLOAD_BACKOFF_MAX_SECONDS = 15.0
 
 
+# How this agent asks for only a job's pages, and how the server says it sent
+# them. The server's side is `app/api/device/tasks.py`; a test holds the two
+# spellings together.
+SELECTED_PAGES = "selected"
+PAGES_HEADER = "X-Printvendo-Pages"
+
+
 class DownloadIncomplete(Exception):
     """Every retry ran out before the whole file arrived."""
+
+
+class _DifferentFile(Exception):
+    """The answer to a resumed request is not the file we have half of."""
+
+
+@dataclass(frozen=True)
+class Fetched:
+    """A file on disk, and whether it is already only the job's pages.
+
+    `pages_selected` is true only when the server said so. The page range must
+    be applied exactly once: a file the server cut is printed as it is, and any
+    other has the range applied at the printer, as always.
+    """
+
+    path: Path
+    pages_selected: bool = False
 
 
 class Backend:
@@ -115,8 +140,16 @@ class Backend:
         on_tick: Callable[[], None] | None = None,
         patience: float = DOWNLOAD_PATIENCE_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
-    ) -> Path:
+    ) -> Fetched:
         """Fetch the file for a task we hold, surviving a connection that drops.
+
+        **Only the pages, when the job names some.** Two pages of a
+        hundred-page scan used to mean fetching the hundred over a shop's
+        connection and handing them all to the print system, with the order at
+        "paid" meanwhile. The server is asked for the selected pages and says
+        in a header when that is what it sent; an older server ignores the
+        question, says nothing, and the range is applied at the printer as
+        before.
 
         **Resumed, never restarted.** A shop on unstable internet lost the
         connection partway through and the job sat at "paid" for as long as
@@ -151,8 +184,14 @@ class Backend:
         partial = into / f"{task.task_id}.pdf.part"
         partial.unlink(missing_ok=True)
         url = f"{self.base_url}/v1/device/tasks/{task.task_id}/file"
+        if getattr(task, "page_range", None):
+            url += f"?pages={SELECTED_PAGES}"
         deadline = time.monotonic() + patience
         attempt = 0
+        # Whether the bytes on disk are the page cut: empty until an answer,
+        # then one value. A list so it is recorded the moment the headers
+        # arrive -- a connection that dies mid-body must not lose it.
+        kind: list[bool] = []
 
         while True:
             have = partial.stat().st_size if partial.exists() else 0
@@ -160,11 +199,11 @@ class Backend:
             if have:
                 headers["Range"] = f"bytes={have}-"
             try:
-                total = self._fetch_into(url, headers, partial, have, on_tick)
+                total = self._fetch_into(url, headers, partial, have, on_tick, kind)
                 size = partial.stat().st_size if partial.exists() else 0
                 if total is None or size >= total:
                     partial.replace(destination)
-                    return destination
+                    return Fetched(destination, pages_selected=kind == [True])
                 # The connection closed cleanly but short. Resume like a drop.
                 problem = f"closed at {size} of {total} bytes"
             except httpx.HTTPStatusError as exc:
@@ -174,6 +213,13 @@ class Backend:
                 problem = f"server said {exc.response.status_code}"
             except httpx.TransportError as exc:
                 problem = f"{type(exc).__name__}: {exc}"
+            except _DifferentFile:
+                # A cut and a whole document are different files. What is on
+                # disk is half of the other one, so it goes and this starts
+                # again rather than joining the two.
+                partial.unlink(missing_ok=True)
+                kind.clear()
+                problem = "the server changed which file it was sending"
 
             attempt += 1
             if time.monotonic() >= deadline:
@@ -198,9 +244,11 @@ class Backend:
         partial: Path,
         have: int,
         on_tick: Callable[[], None] | None,
+        kind: list[bool],
     ) -> int | None:
         """One request. Writes to `partial` and returns the file's full size,
-        or None when the server did not say."""
+        or None when the server did not say. Records in `kind` whether what is
+        being written is the page cut."""
         with self._client.stream(
             "GET", url, headers=headers, timeout=DOWNLOAD_TIMEOUT
         ) as response:
@@ -209,6 +257,10 @@ class Backend:
                 return have
             response.raise_for_status()
             resumed = response.status_code == 206
+            answer = response.headers.get(PAGES_HEADER, "").lower() == SELECTED_PAGES
+            if resumed and kind and kind != [answer]:
+                raise _DifferentFile
+            kind[:] = [answer]
             total = _full_size(response, offset=have if resumed else 0)
             since_tick = 0
             with partial.open("ab" if resumed else "wb") as handle:

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent import commands as commands_module
+from agent.api import Fetched
 from agent.commands import HANDLERS, run_commands
 from agent.printing import PrinterStuck, Task
 from agent.runner import PrinterHealth, run_once
@@ -48,7 +49,7 @@ class FakeBackend:
     def download(self, task, into: Path, **_kw) -> Path:
         path = into / "file.pdf"
         path.write_bytes(b"%PDF-1.4\n")
-        return path
+        return Fetched(path)
 
     def report(self, task_id, state, *, sheets_used=None):
         self.reports.append((task_id, state, sheets_used))

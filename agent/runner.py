@@ -26,6 +26,7 @@ because it is broken.
 import logging
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from agent.commands import run_commands
@@ -210,7 +211,8 @@ def _do_one(
         try:
             # Resumed across dropped connections, with the heartbeat kept
             # beating, and handed over only once every byte has arrived.
-            path = backend.download(task, folder, on_tick=on_tick)
+            fetched = backend.download(task, folder, on_tick=on_tick)
+            path = fetched.path
         except Exception as exc:  # noqa: BLE001 - reported, not swallowed
             log.error("could not fetch %s: %s", task.task_id, exc)
             _report(backend, task.task_id, "failed")
@@ -234,8 +236,12 @@ def _do_one(
             # `on_tick` is the heartbeat, called while the printer works. A
             # two-hundred-page job takes minutes, and a machine that goes quiet
             # for minutes is one an operator is told has gone offline.
+            # A page range is applied exactly once. When the server sent
+            # only the job's pages the file *is* the range, and asking the
+            # printer for pages 5-6 of a two-page file prints nothing.
+            to_print = replace(task, page_range=None) if fetched.pages_selected else task
             printer_fn(
-                task,
+                to_print,
                 file_path=path,
                 printer=printer,
                 on_tick=on_tick,
